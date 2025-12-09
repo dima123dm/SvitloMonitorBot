@@ -71,7 +71,8 @@
 
 ### Крок 1. Клонування репозиторію
 ```bash
-git clone [https://github.com/dima123dm/SvitloMonitorBot.git](https://github.com/dima123dm/SvitloMonitorBot.git)
+git clone https://github.com/dima123dm/SvitloMonitorBot.git
 cd SvitloMonitorBot
 
 pip install -r requirements.txt
+
