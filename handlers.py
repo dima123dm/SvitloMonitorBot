@@ -152,7 +152,8 @@ async def btn_stats(message: types.Message):
         val = r[1]
         total += val
         val_str = f"{int(val)}" if val.is_integer() else f"{val:.1f}"
-        date_nice = r[0][5:].replace("-", ".")
+        dt_obj = datetime.strptime(r[0], "%Y-%m-%d")
+        date_nice = dt_obj.strftime("%d.%m")
         lines.append(f"▫️ {date_nice}:  **{val_str} год.**")
 
     total_str = f"{int(total)}" if total.is_integer() else f"{total:.1f}"
