@@ -2,7 +2,6 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat&logo=python&logoColor=white)
 ![Aiogram](https://img.shields.io/badge/Aiogram-3.x-blue?style=flat&logo=telegram&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
 
 **Telegram Bot:** [@SvitloMonitorBot](https://t.me/SvitloMonitorBot)
 
@@ -74,4 +73,5 @@
 ```bash
 git clone [https://github.com/dima123dm/SvitloMonitorBot.git](https://github.com/dima123dm/SvitloMonitorBot.git)
 cd SvitloMonitorBot
+
 pip install -r requirements.txt
