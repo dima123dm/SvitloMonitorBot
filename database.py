@@ -71,3 +71,8 @@ async def get_users_by_queue(region, queue):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id FROM users WHERE region = ? AND queue = ?", (region, queue)) as cur:
             return await cur.fetchall()
+async def delete_user(user_id):
+    """Видаляє користувача з бази даних (відписка)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        await db.commit()

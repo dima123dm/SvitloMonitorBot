@@ -3,7 +3,6 @@ import aiohttp
 from datetime import datetime
 from config import API_URL
 
-
 async def fetch_api_data():
     """Робить запит до сайту і повертає JSON."""
     try:
@@ -15,25 +14,23 @@ async def fetch_api_data():
         print(f"Помилка API: {e}")
     return None
 
-
 def calculate_off_hours(schedule_json):
     """Рахує суму годин без світла (множимо на 0.5, бо дані по 30 хв)."""
-    if not schedule_json:
+    if not schedule_json: 
         return 0
     # Рахуємо клітинки, де статус = 2 (відключення)
     count = sum(1 for k, v in schedule_json.items() if k != "24:00" and v == 2)
     return count * 0.5
 
-
 def parse_intervals(schedule_json):
     """Перетворює JSON у список інтервалів часу (початок, кінець)."""
-    if not schedule_json:
+    if not schedule_json: 
         return []
-
+    
     times = sorted([k for k in schedule_json.keys() if k != "24:00"])
     intervals = []
     current_start = None
-    is_offline = False
+    is_offline = False 
 
     for t in times:
         status = schedule_json.get(t)
@@ -47,17 +44,16 @@ def parse_intervals(schedule_json):
                 intervals.append((current_start, t))
             is_offline = False
             current_start = None
-
+            
     # Якщо відключення триває до кінця доби
     if is_offline and current_start:
         intervals.append((current_start, "24:00"))
-
+        
     return intervals
-
 
 def format_message(schedule_json, queue_name, date_str, is_tomorrow=False):
     """Створює красивий текст повідомлення."""
-    # Якщо даних немає взагалі
+    # Якщо даних немає взагалі (None)
     if schedule_json is None:
         if is_tomorrow:
             return "🕒 **Графік на завтра ще не оприлюднено.**"
@@ -70,32 +66,31 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False):
             "Thursday": "Четвер", "Friday": "П'ятниця", "Saturday": "Субота", "Sunday": "Неділя"}
     day_name = days.get(dt.strftime("%A"), dt.strftime("%A"))
 
-    # Заголовок
+    # --- ТУТ ЗМІНЕНО ЗАГОЛОВКИ ---
     if is_tomorrow:
         header = f"🔮 **Графік відключень світла на завтра, {dt.strftime('%d.%m')} ({day_name})**"
     else:
         header = f"💡 **Графік відключень світла на сьогодні, {dt.strftime('%d.%m')} ({day_name})**"
 
     intervals = parse_intervals(schedule_json)
-
+    
     # Якщо це завтра і список порожній -> графіку ще немає
     if is_tomorrow and not intervals:
-        return f"🕒 **Графік на завтра ({dt.strftime('%d.%m')}) ще не оприлюднено.**\n(Або відключень не планується)"
+         return f"🕒 **Графік на завтра ({dt.strftime('%d.%m')}) ще не оприлюднено.**\n(Або відключень не планується, чекаємо оновлень)"
 
     if not intervals:
-        body = "✅ **Відключень не передбачено.**"
+        body = "✅ **Відключень не передбачено.** (Світло є)"
     else:
         lines = []
         for start, end in intervals:
-            # Вираховуємо тривалість для кожного відключення
+            # Вираховуємо тривалість
             t1 = datetime.strptime(start, "%H:%M")
             if end == "24:00":
                 diff = 24 - t1.hour - (t1.minute / 60)
             else:
                 t2 = datetime.strptime(end, "%H:%M")
                 diff = (t2 - t1).seconds / 3600
-
-            # Форматуємо число (прибираємо .0)
+            
             diff_str = f"{int(diff)}" if diff.is_integer() else f"{diff:.1f}"
             lines.append(f"🕒 **{start} — {end}** _({diff_str} год)_")
         body = "\n".join(lines)
@@ -111,6 +106,8 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False):
         f"──────────────────\n"
     )
     if total > 0:
-        text += f"⚡️ Всього: **{total_str} год.**"
-
+        text += f"⚡️ Всього без світла: **{total_str} год.**"
+    else:
+        text += f"⚡️ Світло має бути весь день."
+    
     return text

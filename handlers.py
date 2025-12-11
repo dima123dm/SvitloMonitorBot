@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.types import KeyboardButton
+from aiogram.types import KeyboardButton, InlineKeyboardButton
 
 import database as db
 import api_utils as api
@@ -42,7 +42,11 @@ async def show_regions_menu(message: types.Message, text):
     kb = InlineKeyboardBuilder()
     for region in data['regions']:
         kb.button(text=region['name_ua'], callback_data=f"reg|{region['name_ua']}")
+    
     kb.adjust(2)
+    
+    # Додаємо кнопку відписки
+    kb.row(InlineKeyboardButton(text="🔕 Зупинити бота (Відписатися)", callback_data="unsub"))
 
     await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
@@ -152,8 +156,11 @@ async def btn_stats(message: types.Message):
         val = r[1]
         total += val
         val_str = f"{int(val)}" if val.is_integer() else f"{val:.1f}"
+        
+        # Конвертуємо дату у формат День.Місяць
         dt_obj = datetime.strptime(r[0], "%Y-%m-%d")
         date_nice = dt_obj.strftime("%d.%m")
+        
         lines.append(f"▫️ {date_nice}:  **{val_str} год.**")
 
     total_str = f"{int(total)}" if total.is_integer() else f"{total:.1f}"
@@ -166,3 +173,16 @@ async def btn_stats(message: types.Message):
             f"⚡️ Загалом: **{total_str} год.**"
     )
     await message.answer(text, parse_mode="Markdown")
+
+
+@router.callback_query(F.data == "unsub")
+async def unsub_handler(callback: types.CallbackQuery):
+    """Видаляє користувача з бази даних."""
+    await db.delete_user(callback.from_user.id)
+    
+    await callback.message.edit_text(
+        "🔕 **Ви успішно відписалися.**\n\n"
+        "Бот більше не надсилатиме вам сповіщення.\n"
+        "Якщо захочете повернутися — просто натисніть /start або налаштуйте область знову.",
+        parse_mode="Markdown"
+    )
