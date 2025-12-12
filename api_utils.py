@@ -52,7 +52,7 @@ def parse_intervals(schedule_json):
     return intervals
 
 def format_message(schedule_json, queue_name, date_str, is_tomorrow=False):
-    """Створює красивий текст повідомлення."""
+    """Створює текст повідомлення."""
     # Якщо даних немає взагалі (None)
     if schedule_json is None:
         if is_tomorrow:
@@ -66,7 +66,7 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False):
             "Thursday": "Четвер", "Friday": "П'ятниця", "Saturday": "Субота", "Sunday": "Неділя"}
     day_name = days.get(dt.strftime("%A"), dt.strftime("%A"))
 
-    # --- ТУТ ЗМІНЕНО ЗАГОЛОВКИ ---
+    # ЗАГОЛОВКИ ---
     if is_tomorrow:
         header = f"🔮 **Графік відключень світла на завтра, {dt.strftime('%d.%m')} ({day_name})**"
     else:
