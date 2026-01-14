@@ -10,7 +10,8 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 region TEXT,
-                queue TEXT
+                queue TEXT,
+                mode TEXT DEFAULT 'normal'
             )
         """)
         # Таблиця для статистики (дата, черга, кількість годин без світла)
@@ -21,6 +22,16 @@ async def init_db():
                 queue TEXT,
                 off_hours REAL,
                 PRIMARY KEY (date, region, queue)
+            )
+        """)
+        # Таблиця для повідомлень підтримки
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS support_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                text TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
         await db.commit()
@@ -52,10 +63,16 @@ async def save_stats(region, queue, date_str, off_hours):
         await db.commit()
 
 async def get_stats_data(region, queue):
-    """Отримує статистику за останні 7 днів."""
+    """Отримує статистику за останні 7 днів (від сьогодні і назад)."""
     async with aiosqlite.connect(DB_NAME) as db:
-        # Беремо останні 7 записів, сортуємо за датою
-        sql = "SELECT date, off_hours FROM daily_stats WHERE region = ? AND queue = ? ORDER BY date DESC LIMIT 7"
+        # Беремо останні 7 днів від сьогодні
+        sql = """
+            SELECT date, off_hours 
+            FROM daily_stats 
+            WHERE region = ? AND queue = ? 
+            ORDER BY date ASC 
+            LIMIT 7
+        """
         async with db.execute(sql, (region, queue)) as cur:
             rows = await cur.fetchall()
             return rows
@@ -76,3 +93,49 @@ async def delete_user(user_id):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
         await db.commit()
+
+async def set_user_mode(user_id, mode):
+    """Встановлює режим користувача (normal, support, admin)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE users SET mode = ? WHERE user_id = ?",
+            (mode, user_id)
+        )
+        await db.commit()
+
+async def get_user_mode(user_id):
+    """Отримує режим користувача."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT mode FROM users WHERE user_id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else "normal"
+
+async def save_support_message(user_id, username, text):
+    """Зберігає повідомлення від користувача в підтримці."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO support_messages (user_id, username, text) VALUES (?, ?, ?)",
+            (user_id, username, text)
+        )
+        await db.commit()
+
+async def get_all_support_messages():
+    """Отримує всі повідомлення підтримки."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT id, user_id, username, text, timestamp FROM support_messages ORDER BY timestamp DESC"
+        ) as cur:
+            return await cur.fetchall()
+
+async def get_users_count():
+    """Отримує кількість всіх користувачів."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+async def get_all_users_for_broadcast():
+    """Отримує всіх користувачів для розсилки."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT DISTINCT user_id FROM users") as cur:
+            return await cur.fetchall()

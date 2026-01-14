@@ -111,8 +111,8 @@ async def check_alerts(bot):
                             await broadcast(bot, key[0], key[1], msg)
                             alert_history.add(alert_id)
                 
-                # Стик днів (23:55 -> 00:00)
-                if pre_time == "00:00" and tom_intervals:
+                # Стик днів (23:55 -> 00:00) - перевіряємо завтрашній графік
+                if pre_time == "23:55" and tom_intervals:
                     start_tom, end_tom = tom_intervals[0]
                     if start_tom == "00:00":
                         alert_id = f"{key}_00:00_tom_pre"

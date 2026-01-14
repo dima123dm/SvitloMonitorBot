@@ -8,6 +8,8 @@ from aiogram.types import KeyboardButton, InlineKeyboardButton
 import database as db
 import api_utils as api
 
+ADMIN_ID = 723550550  # ID адміна @dima123dm
+
 router = Router()
 
 
@@ -16,6 +18,7 @@ def get_main_keyboard():
     kb = ReplyKeyboardBuilder()
     kb.row(KeyboardButton(text="📅 Графік на сьогодні"), KeyboardButton(text="🔮 Графік на завтра"))
     kb.row(KeyboardButton(text="📊 Аналітика"), KeyboardButton(text="⚙️ Налаштування"))
+    kb.row(KeyboardButton(text="💬 Підтримка"))
     return kb.as_markup(resize_keyboard=True)
 
 
@@ -147,8 +150,7 @@ async def btn_stats(message: types.Message):
     if not rows:
         return await message.answer("📉 **Статистика пуста.**\nПоки що немає даних.")
 
-    # Сортуємо: старі -> нові
-    rows.sort(key=lambda x: x[0])
+    # Дані вже сортовані за датою (ASC) з БД
 
     total = 0
     lines = []
@@ -186,3 +188,188 @@ async def unsub_handler(callback: types.CallbackQuery):
         "Якщо захочете повернутися — просто натисніть /start або налаштуйте область знову.",
         parse_mode="Markdown"
     )
+
+
+@router.message(F.text == "💬 Підтримка")
+async def btn_support(message: types.Message):
+    """Користувач натиснув кнопку Підтримка."""
+    await message.answer(
+        "💬 **Служба підтримки**\n\n"
+        "Напишіть ваше повідомлення, і адміністратор відповість вам якомога швидше.\n"
+        "Зверху бачитимете ваш нік, щоб адміністратор міг вас знайти.",
+        parse_mode="Markdown"
+    )
+    await db.set_user_mode(message.from_user.id, "support")
+
+
+@router.message(F.text.regexp(r".*"))
+async def handle_user_message(message: types.Message):
+    """Обробляє звичайні текстові повідомлення користувача (в режимі підтримки)."""
+    # Перевіряємо, чи користувач в режимі підтримки
+    mode = await db.get_user_mode(message.from_user.id)
+    
+    if mode == "support":
+        # Зберігаємо повідомлення
+        await db.save_support_message(
+            user_id=message.from_user.id,
+            username=message.from_user.username or f"ID{message.from_user.id}",
+            text=message.text
+        )
+        
+        # Відправляємо адміну
+        admin_id = 723550550
+        try:
+            await message.bot.send_message(
+                admin_id,
+                f"💬 **Нове повідомлення від користувача:**\n\n"
+                f"👤 Нік: @{message.from_user.username or 'без нікнейма'}\n"
+                f"ID: {message.from_user.id}\n"
+                f"Ім'я: {message.from_user.first_name}\n\n"
+                f"💭 Повідомлення:\n{message.text}\n\n"
+                f"─────────────────\n"
+                f"Для відповіді скопіюйте ID або нік користувача.",
+                parse_mode="Markdown"
+            )
+            await message.answer("✅ Ваше повідомлення отримано! Адміністратор відповість вам найближчим часом.")
+            # Повертаємо у нормальний режим
+            await db.set_user_mode(message.from_user.id, "normal")
+            await message.answer("", reply_markup=get_main_keyboard())
+        except Exception as e:
+            print(f"Помилка при відправці адміну: {e}")
+            await message.answer("❌ Помилка при відправці повідомлення. Спробуйте ще раз.")
+
+
+# ========== КОМАНДИ ДЛЯ АДМІНІСТРАТОРА ==========
+
+@router.message(Command("admin"))
+async def admin_menu(message: types.Message):
+    """Панель адміністратора."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ У вас немає доступу до цієї команди.")
+        return
+    
+    kb = ReplyKeyboardBuilder()
+    kb.row(KeyboardButton(text="📨 Розсилка всім"))
+    kb.row(KeyboardButton(text="📋 Список повідомлень підтримки"))
+    kb.row(KeyboardButton(text="👥 Кількість користувачів"))
+    kb.row(KeyboardButton(text="🏠 Головне меню"))
+    
+    await message.answer(
+        "👨‍💼 **Панель адміністратора**\n\n"
+        "Виберіть дію:",
+        reply_markup=kb.as_markup(resize_keyboard=True),
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text == "📨 Розсилка всім")
+async def broadcast_start(message: types.Message):
+    """Адміністратор починає розсилку."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    await message.answer(
+        "📨 **Розсилка всім користувачам**\n\n"
+        "Напишіть текст повідомлення, яке хочете відправити всім користувачам:"
+    )
+    await db.set_user_mode(ADMIN_ID, "broadcast")
+
+
+@router.message(F.text == "📋 Список повідомлень підтримки")
+async def support_messages_list(message: types.Message):
+    """Показує всі повідомлення підтримки."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    messages = await db.get_all_support_messages()
+    
+    if not messages:
+        await message.answer("📋 **Немає повідомлень підтримки.**")
+        return
+    
+    # Показуємо по 5 повідомлень
+    text = "📋 **Останні повідомлення підтримки:**\n\n"
+    for msg in messages[:5]:
+        msg_id, user_id, username, text_msg, timestamp = msg
+        text += (
+            f"#️⃣ ID: {user_id}\n"
+            f"👤 Користувач: @{username}\n"
+            f"💬 Повідомлення: {text_msg}\n"
+            f"⏰ Час: {timestamp}\n"
+            f"─────────────────\n\n"
+        )
+    
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "👥 Кількість користувачів")
+async def users_count(message: types.Message):
+    """Показує кількість користувачів."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    count = await db.get_users_count()
+    
+    await message.answer(
+        f"👥 **Статистика користувачів**\n\n"
+        f"📊 Всього користувачів: **{count}**",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text == "🏠 Головне меню")
+async def back_to_main(message: types.Message):
+    """Повернення на головне меню."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    await message.answer(
+        "🏠 **Ви повернулися на головне меню.**",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+    await db.set_user_mode(ADMIN_ID, "normal")
+
+
+@router.message(F.text.regexp(r".*"))
+async def handle_admin_broadcast(message: types.Message):
+    """Обробляє текст для розсилки адміном."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    mode = await db.get_user_mode(ADMIN_ID)
+    
+    if mode == "broadcast":
+        # Отримуємо всіх користувачів
+        users = await db.get_all_users_for_broadcast()
+        
+        if not users:
+            await message.answer("❌ Немає користувачів для розсилки.")
+            await db.set_user_mode(ADMIN_ID, "normal")
+            return
+        
+        sent_count = 0
+        failed_count = 0
+        
+        await message.answer(f"📤 Відправляю повідомлення {len(users)} користувачам...")
+        
+        for (user_id,) in users:
+            try:
+                await message.bot.send_message(
+                    user_id,
+                    f"📢 **Сповіщення від адміністратора:**\n\n{message.text}",
+                    parse_mode="Markdown"
+                )
+                sent_count += 1
+            except:
+                failed_count += 1
+        
+        await message.answer(
+            f"✅ **Розсилка завершена!**\n\n"
+            f"✓ Відправлено: {sent_count}\n"
+            f"✗ Помилок: {failed_count}",
+            parse_mode="Markdown"
+        )
+        
+        await db.set_user_mode(ADMIN_ID, "normal")
+        await message.answer("", reply_markup=get_main_keyboard())
