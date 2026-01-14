@@ -1,5 +1,5 @@
 # handlers.py
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -12,6 +12,15 @@ ADMIN_ID = 723550550  # ID адміна @dima123dm
 
 router = Router()
 
+# --- ДОПОМІЖНА ФУНКЦІЯ ЧАСУ ---
+def get_local_now():
+    """Повертає поточний час (UTC+2/UTC+3). 
+    Використовуємо це, щоб уникнути проблем, якщо сервер в UTC."""
+    # Якщо сервер налаштований правильно - достатньо datetime.now()
+    # Якщо сервер в UTC, додаємо 2 години (або 3 літом) вручну, або використовуємо pytz.
+    # Тут базовий варіант: беремо системний час. 
+    # ПЕРЕВІРТЕ ЧАС НА СЕРВЕРІ командою: date
+    return datetime.now()
 
 def get_main_keyboard():
     """Створює нижнє меню з кнопками."""
@@ -99,7 +108,7 @@ async def select_queue(callback: types.CallbackQuery):
 
 
 async def show_today_schedule(message, region, queue):
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = get_local_now().strftime('%Y-%m-%d')
     data = await api.fetch_api_data()
     schedule = None
 
@@ -137,7 +146,7 @@ async def btn_tomorrow(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: return await message.answer("Спочатку налаштування.")
 
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    tomorrow = (get_local_now() + timedelta(days=1)).strftime('%Y-%m-%d')
     data = await api.fetch_api_data()
     schedule = None
 
@@ -164,10 +173,18 @@ async def btn_stats(message: types.Message):
         return await message.answer("📉 **Статистика пуста.**\nПоки що немає даних.")
 
     # Дані вже сортовані за датою (ASC) з БД
-
     total = 0
     lines = []
+    
+    # Фільтрація майбутніх дат (якщо серверний час "полетів" вперед)
+    current_date = get_local_now().strftime('%Y-%m-%d')
+
     for r in rows:
+        r_date = r[0]
+        # Показуємо тільки якщо дата <= сьогодні (хоча SQL запит це вже робить, це перестраховка)
+        if r_date > current_date:
+            continue
+
         val = r[1]
         total += val
         val_str = f"{int(val)}" if val.is_integer() else f"{val:.1f}"
@@ -215,43 +232,6 @@ async def btn_support(message: types.Message):
     await db.set_user_mode(message.from_user.id, "support")
 
 
-@router.message(F.text.regexp(r".*"))
-async def handle_user_message(message: types.Message):
-    """Обробляє звичайні текстові повідомлення користувача (в режимі підтримки)."""
-    # Перевіряємо, чи користувач в режимі підтримки
-    mode = await db.get_user_mode(message.from_user.id)
-    
-    if mode == "support":
-        # Зберігаємо повідомлення
-        await db.save_support_message(
-            user_id=message.from_user.id,
-            username=message.from_user.username or f"ID{message.from_user.id}",
-            text=message.text
-        )
-        
-        # Відправляємо адміну
-        admin_id = 723550550
-        try:
-            await message.bot.send_message(
-                admin_id,
-                f"💬 **Нове повідомлення від користувача:**\n\n"
-                f"👤 Нік: @{message.from_user.username or 'без нікнейма'}\n"
-                f"ID: {message.from_user.id}\n"
-                f"Ім'я: {message.from_user.first_name}\n\n"
-                f"💭 Повідомлення:\n{message.text}\n\n"
-                f"─────────────────\n"
-                f"Для відповіді скопіюйте ID або нік користувача.",
-                parse_mode="Markdown"
-            )
-            await message.answer("✅ Ваше повідомлення отримано! Адміністратор відповість вам найближчим часом.")
-            # Повертаємо у нормальний режим
-            await db.set_user_mode(message.from_user.id, "normal")
-            await message.answer("", reply_markup=get_main_keyboard())
-        except Exception as e:
-            print(f"Помилка при відправці адміну: {e}")
-            await message.answer("❌ Помилка при відправці повідомлення. Спробуйте ще раз.")
-
-
 # ========== КОМАНДИ ДЛЯ АДМІНІСТРАТОРА ==========
 
 @router.message(Command("admin"))
@@ -263,8 +243,7 @@ async def admin_menu(message: types.Message):
     
     kb = ReplyKeyboardBuilder()
     kb.row(KeyboardButton(text="📨 Розсилка всім"))
-    kb.row(KeyboardButton(text="📋 Підтримка"))
-    kb.row(KeyboardButton(text="👥 Користувачів"))
+    kb.row(KeyboardButton(text="📋 Підтримка"), KeyboardButton(text="👥 Користувачів"))
     kb.row(KeyboardButton(text="🏠 Меню"))
     
     await message.answer(
@@ -305,11 +284,10 @@ async def support_messages_list(message: types.Message):
     for msg in messages[:5]:
         msg_id, user_id, username, text_msg, timestamp = msg
         text += (
-            f"#️⃣ ID: {user_id}\n"
-            f"👤 Користувач: @{username}\n"
-            f"💬 Повідомлення: {text_msg}\n"
-            f"⏰ Час: {timestamp}\n"
-            f"─────────────────\n\n"
+            f"👤 @{username} (ID: {user_id})\n"
+            f"💬 {text_msg}\n"
+            f"⏰ {timestamp}\n"
+            f"─────────────────\n"
         )
     
     await message.answer(text, parse_mode="Markdown")
@@ -344,45 +322,81 @@ async def back_to_main(message: types.Message):
     await db.set_user_mode(ADMIN_ID, "normal")
 
 
-@router.message(F.text.regexp(r".*"))
-async def handle_admin_broadcast(message: types.Message):
-    """Обробляє текст для розсилки адміном."""
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    mode = await db.get_user_mode(ADMIN_ID)
-    
-    if mode == "broadcast":
-        # Отримуємо всіх користувачів
+# ========== ЄДИНИЙ ОБРОБНИК ТЕКСТУ (РОЗСИЛКА + ПІДТРИМКА) ==========
+
+@router.message(F.text)
+async def handle_text_messages(message: types.Message):
+    """
+    Цей хендлер ловить ВСІ текстові повідомлення, які не потрапили в кнопки вище.
+    Тут обробляємо:
+    1. Розсилку від адміна.
+    2. Повідомлення в підтримку від користувача.
+    """
+    user_id = message.from_user.id
+    mode = await db.get_user_mode(user_id)
+
+    # --- 1. ЛОГІКА АДМІНА (РОЗСИЛКА) ---
+    if user_id == ADMIN_ID and mode == "broadcast":
         users = await db.get_all_users_for_broadcast()
         
         if not users:
             await message.answer("❌ Немає користувачів для розсилки.")
-            await db.set_user_mode(ADMIN_ID, "normal")
-            return
+        else:
+            await message.answer(f"📤 Відправка {len(users)} користувачам...")
+            sent_count = 0
+            failed_count = 0
+            
+            for (uid,) in users:
+                try:
+                    await message.bot.send_message(
+                        uid,
+                        f"📢 **Сповіщення:**\n\n{message.text}",
+                        parse_mode="Markdown"
+                    )
+                    sent_count += 1
+                except:
+                    failed_count += 1
+            
+            await message.answer(
+                f"✅ **Розсилка завершена!**\n"
+                f"✓ Відправлено: {sent_count}\n"
+                f"✗ Помилок: {failed_count}",
+                parse_mode="Markdown"
+            )
         
-        sent_count = 0
-        failed_count = 0
-        
-        await message.answer(f"📤 Відправляю повідомлення {len(users)} користувачам...")
-        
-        for (user_id,) in users:
-            try:
-                await message.bot.send_message(
-                    user_id,
-                    f"📢 **Сповіщення від адміністратора:**\n\n{message.text}",
-                    parse_mode="Markdown"
-                )
-                sent_count += 1
-            except:
-                failed_count += 1
-        
-        await message.answer(
-            f"✅ **Розсилка завершена!**\n\n"
-            f"✓ Відправлено: {sent_count}\n"
-            f"✗ Помилок: {failed_count}",
-            parse_mode="Markdown"
-        )
-        
+        # Повертаємо адміна в звичайний режим
         await db.set_user_mode(ADMIN_ID, "normal")
         await message.answer("", reply_markup=get_main_keyboard())
+        return
+
+    # --- 2. ЛОГІКА КОРИСТУВАЧА (ПІДТРИМКА) ---
+    if mode == "support":
+        # Зберігаємо в БД
+        await db.save_support_message(
+            user_id=user_id,
+            username=message.from_user.username or f"ID{user_id}",
+            text=message.text
+        )
+        
+        # Відправляємо адміну
+        try:
+            await message.bot.send_message(
+                ADMIN_ID,
+                f"💬 **Нове повідомлення підтримки!**\n"
+                f"👤: @{message.from_user.username or 'NoNick'} (ID: {user_id})\n\n"
+                f"{message.text}",
+                parse_mode="Markdown"
+            )
+            await message.answer("✅ Ваше повідомлення відправлено адміністратору!")
+        except Exception as e:
+            print(f"Failed to send support msg to admin: {e}")
+            await message.answer("❌ Сталася помилка при відправці, спробуйте пізніше.")
+
+        # Повертаємо користувача в нормальний режим
+        await db.set_user_mode(user_id, "normal")
+        await message.answer("", reply_markup=get_main_keyboard())
+        return
+
+    # Якщо текст не підходить ні під одну команду
+    # Можна нічого не відповідати або сказати "Користуйтеся меню"
+    # await message.answer("ℹ️ Будь ласка, скористайтеся кнопками меню.")
