@@ -65,17 +65,18 @@ async def save_stats(region, queue, date_str, off_hours):
 async def get_stats_data(region, queue):
     """Отримує статистику за останні 7 днів (від сьогодні і назад)."""
     async with aiosqlite.connect(DB_NAME) as db:
-        # Беремо останні 7 днів від сьогодні
+        # Беремо останні 7 днів від сьогодні, сортуємо від старого до нового
         sql = """
             SELECT date, off_hours 
             FROM daily_stats 
             WHERE region = ? AND queue = ? 
-            ORDER BY date ASC 
+            ORDER BY date DESC 
             LIMIT 7
         """
         async with db.execute(sql, (region, queue)) as cur:
             rows = await cur.fetchall()
-            return rows
+            # Розвертаємо, щоб мати від старого до нового
+            return list(reversed(rows))
 
 async def get_all_subs():
     """Отримує список всіх унікальних підписок (регіон + черга)."""

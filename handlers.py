@@ -25,6 +25,19 @@ def get_main_keyboard():
 @router.message(Command("start"))
 async def start_command(message: types.Message):
     """Команда /start - вітання та початок налаштування."""
+    user = await db.get_user(message.from_user.id)
+    
+    # Якщо користувач вже обрав регіон, показуємо меню одразу
+    if user:
+        await message.answer(
+            "👋 **Ласкаво просимо назад!**\n\n"
+            f"📍 Ваш вибір: **{user[0]}, Черга {user[1]}**",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Якщо новий користувач, пропонуємо вибрати область
     text = (
         "👋 **Вітаю! Це бот Моніторингу Світла.**\n\n"
         "Я допоможу вам:\n"
@@ -195,7 +208,7 @@ async def btn_support(message: types.Message):
     """Користувач натиснув кнопку Підтримка."""
     await message.answer(
         "💬 **Служба підтримки**\n\n"
-        "Напишіть ваше повідомлення, і адміністратор відповість вам якомога швидше.\n"
+        "Напишіть ваше повідомлення для підтримки, і адміністратор відповість вам якомога швидше.\n"
         "Зверху бачитимете ваш нік, щоб адміністратор міг вас знайти.",
         parse_mode="Markdown"
     )
@@ -250,9 +263,9 @@ async def admin_menu(message: types.Message):
     
     kb = ReplyKeyboardBuilder()
     kb.row(KeyboardButton(text="📨 Розсилка всім"))
-    kb.row(KeyboardButton(text="📋 Список повідомлень підтримки"))
-    kb.row(KeyboardButton(text="👥 Кількість користувачів"))
-    kb.row(KeyboardButton(text="🏠 Головне меню"))
+    kb.row(KeyboardButton(text="📋 Підтримка"))
+    kb.row(KeyboardButton(text="👥 Користувачів"))
+    kb.row(KeyboardButton(text="🏠 Меню"))
     
     await message.answer(
         "👨‍💼 **Панель адміністратора**\n\n"
@@ -275,7 +288,7 @@ async def broadcast_start(message: types.Message):
     await db.set_user_mode(ADMIN_ID, "broadcast")
 
 
-@router.message(F.text == "📋 Список повідомлень підтримки")
+@router.message(F.text == "📋 Підтримка")
 async def support_messages_list(message: types.Message):
     """Показує всі повідомлення підтримки."""
     if message.from_user.id != ADMIN_ID:
@@ -302,7 +315,7 @@ async def support_messages_list(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 
-@router.message(F.text == "👥 Кількість користувачів")
+@router.message(F.text == "👥 Користувачів")
 async def users_count(message: types.Message):
     """Показує кількість користувачів."""
     if message.from_user.id != ADMIN_ID:
@@ -317,7 +330,7 @@ async def users_count(message: types.Message):
     )
 
 
-@router.message(F.text == "🏠 Головне меню")
+@router.message(F.text == "🏠 Меню")
 async def back_to_main(message: types.Message):
     """Повернення на головне меню."""
     if message.from_user.id != ADMIN_ID:
