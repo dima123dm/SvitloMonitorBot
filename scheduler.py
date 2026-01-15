@@ -99,6 +99,7 @@ async def check_alerts(bot):
         try:
             now = datetime.now()
             curr_time = now.strftime("%H:%M")
+            # pre_time - це час через 5 хвилин
             pre_time = (now + timedelta(minutes=5)).strftime("%H:%M")
             
             if curr_time == "00:00": 
@@ -115,6 +116,11 @@ async def check_alerts(bot):
 
                 # --- 1. СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ (PRE-ALERT) ---
                 for start, end in today_intervals:
+                    # ВАЖЛИВО: Ігноруємо "00:00" з поточного дня, бо це вже минуле (початок дня).
+                    # Сповіщення про 00:00 обробляється окремим блоком нижче.
+                    if start == "00:00":
+                        continue
+
                     if pre_time == start:
                         alert_id = f"{key}_{start}_pre"
                         if alert_id not in alert_history:
@@ -128,18 +134,26 @@ async def check_alerts(bot):
                                     actual_end = f"завтра до {actual_end}"
                             elif end == "24:00":
                                 actual_end = "кінця дня"
-                            # --- НОВИЙ ФОРМАТ ---
+                            
+                            # Формуємо повідомлення
                             msg = f"⏳ **Скоро відключення (в {start}).**\nСвітла не буде до **{actual_end}**."
                             await broadcast(bot, key[0], key[1], msg)
                             alert_history.add(alert_id)
                 
-                # Стик днів (23:55 -> 00:00) - перевіряємо завтрашній графік
-                if pre_time == "23:55" and tom_intervals:
+                # --- Стик днів (23:55 -> 00:00) ---
+                # Якщо зараз 23:55, то pre_time стає "00:00".
+                # Саме в цей момент перевіряємо початок завтрашнього графіку.
+                if pre_time == "00:00" and tom_intervals:
                     start_tom, end_tom = tom_intervals[0]
                     if start_tom == "00:00":
                         alert_id = f"{key}_00:00_tom_pre"
                         if alert_id not in alert_history:
-                             msg = f"⏳ **Скоро відключення (в 00:00).**\nСвітла не буде до **{end_tom}**."
+                             if end_tom == "24:00":
+                                 end_display = "кінця дня"
+                             else:
+                                 end_display = end_tom
+
+                             msg = f"⏳ **Скоро відключення (в 00:00).**\nСвітла не буде до **{end_display}**."
                              await broadcast(bot, key[0], key[1], msg)
                              alert_history.add(alert_id)
 
