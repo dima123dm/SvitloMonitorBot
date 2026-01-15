@@ -1,5 +1,6 @@
 # database.py
 import aiosqlite
+from datetime import datetime
 from config import DB_NAME
 
 async def init_db():
