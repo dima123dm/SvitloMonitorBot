@@ -138,34 +138,51 @@ async def btn_tomorrow(message: types.Message):
 async def btn_stats(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: return
-    
+
     # 1. Отримуємо дані з БД
     rows = await db.get_stats_data(user[0], user[1])
     # Перетворюємо в словник { '2024-01-14': 4.0, ... }
     data_map = {r[0]: r[1] for r in rows} if rows else {}
 
+    # 2. Отримуємо дані з API для заповнення пропусків
+    api_data = await api.fetch_api_data()
+
     total = 0
     lines = []
-    
-    # 2. Генеруємо список останніх 7 днів вручну
+
+    # 3. Генеруємо список останніх 7 днів вручну
     current_date = get_local_now()
-    
+
     # Цикл: 6, 5, 4, 3, 2, 1, 0 (днів тому)
     for i in range(6, -1, -1):
         d = current_date - timedelta(days=i)
         d_str = d.strftime('%Y-%m-%d')
-        
-        # Якщо в базі є дані - беремо, якщо ні - 0
-        val = data_map.get(d_str, 0)
+
+        val = data_map.get(d_str)
+        if val is None and api_data:
+            # Спробуємо отримати дані з API
+            schedule = None
+            for r in api_data['regions']:
+                if r['name_ua'] == user[0]:
+                    schedule = r['schedule'].get(user[1], {}).get(d_str)
+                    break
+            if schedule:
+                val = api.calculate_off_hours(schedule)
+                await db.save_stats(user[0], user[1], d_str, val)
+            else:
+                val = 0
+        elif val is None:
+            val = 0
+
         total += val
-        
+
         val_str = f"{int(val)}" if val == int(val) else f"{val:.1f}"
         d_nice = d.strftime('%d.%m')
-        
+
         lines.append(f"▫️ {d_nice}:  **{val_str} год.**")
 
     total_str = f"{int(total)}" if total == int(total) else f"{total:.1f}"
-    
+
     text = (
         f"📊 **Статистика (останні 7 днів)**\n"
         f"📍 {user[0]}, Черга {user[1]}\n\n" +
