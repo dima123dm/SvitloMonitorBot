@@ -140,3 +140,11 @@ async def get_all_users_for_broadcast():
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT DISTINCT user_id FROM users") as cur:
             return await cur.fetchall()
+
+async def cleanup_old_stats():
+    """Видаляє статистику старше 7 днів."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Видаляємо записи, де дата старше ніж 7 днів від сьогодні
+        cutoff_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        await db.execute("DELETE FROM daily_stats WHERE date < ?", (cutoff_date,))
+        await db.commit()

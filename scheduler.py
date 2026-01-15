@@ -36,6 +36,9 @@ async def check_updates(bot):
     """Перевіряє оновлення графіків на сайті."""
     while True:
         try:
+            # Очищаємо старі дані статистики
+            await db.cleanup_old_stats()
+
             data = await api.fetch_api_data()
             if data:
                 today = datetime.now().strftime('%Y-%m-%d')
@@ -76,6 +79,15 @@ async def check_updates(bot):
                         await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
 
                     schedules_cache[(region, queue)] = {"today": today_sch, "tomorrow": tom_sch}
+
+                # Додатково зберігаємо статистику за останні 7 днів, якщо дані є в API
+                current_date = datetime.now()
+                for i in range(7):
+                    d = (current_date - timedelta(days=i)).strftime('%Y-%m-%d')
+                    sch = r_data['schedule'].get(queue, {}).get(d)
+                    if sch:
+                        await db.save_stats(region, queue, d, api.calculate_off_hours(sch))
+
         except Exception as e:
             print(f"Update Error: {e}")
         
