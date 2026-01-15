@@ -118,8 +118,18 @@ async def check_alerts(bot):
                     if pre_time == start:
                         alert_id = f"{key}_{start}_pre"
                         if alert_id not in alert_history:
+                            # Перевіряємо, чи продовжується відключення завтра
+                            actual_end = end
+                            if end == "24:00" and tom_intervals and tom_intervals[0][0] == "00:00":
+                                actual_end = tom_intervals[0][1]
+                                if actual_end == "24:00":
+                                    actual_end = "завтра до кінця дня"
+                                else:
+                                    actual_end = f"завтра до {actual_end}"
+                            elif end == "24:00":
+                                actual_end = "кінця дня"
                             # --- НОВИЙ ФОРМАТ ---
-                            msg = f"⏳ **Скоро відключення (в {start}).**\nСвітла не буде до **{end}**."
+                            msg = f"⏳ **Скоро відключення (в {start}).**\nСвітла не буде до **{actual_end}**."
                             await broadcast(bot, key[0], key[1], msg)
                             alert_history.add(alert_id)
                 
