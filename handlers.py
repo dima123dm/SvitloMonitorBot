@@ -139,18 +139,13 @@ async def btn_stats(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: return
 
-    # 1. Отримуємо дані з БД
-    rows = await db.get_stats_data(user[0], user[1])
-    # Перетворюємо в словник { '2024-01-14': 4.0, ... }
-    data_map = {r[0]: r[1] for r in rows} if rows else {}
-
-    # 2. Отримуємо дані з API для заповнення пропусків
+    # Отримуємо дані з API для заповнення пропусків
     api_data = await api.fetch_api_data()
 
     total = 0
     lines = []
 
-    # 3. Генеруємо список останніх 7 днів вручну
+    # Генеруємо список останніх 7 днів вручну
     current_date = get_local_now()
 
     # Цикл: 6, 5, 4, 3, 2, 1, 0 (днів тому)
@@ -158,9 +153,10 @@ async def btn_stats(message: types.Message):
         d = current_date - timedelta(days=i)
         d_str = d.strftime('%Y-%m-%d')
 
-        val = data_map.get(d_str)
+        # Спочатку перевіряємо в БД
+        val = await db.get_off_hours_for_date(user[0], user[1], d_str)
         if val is None and api_data:
-            # Спробуємо отримати дані з API
+            # Якщо немає в БД, пробуємо отримати з API
             schedule = None
             for r in api_data['regions']:
                 if r['name_ua'] == user[0]:

@@ -148,3 +148,10 @@ async def cleanup_old_stats():
         cutoff_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
         await db.execute("DELETE FROM daily_stats WHERE date < ?", (cutoff_date,))
         await db.commit()
+
+async def get_off_hours_for_date(region, queue, date_str):
+    """Отримує години відключення для конкретної дати."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT off_hours FROM daily_stats WHERE region = ? AND queue = ? AND date = ?", (region, queue, date_str)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
