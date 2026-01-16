@@ -34,6 +34,9 @@ def find_next_outage(current_time_str, today_intervals, tomorrow_intervals):
 
 async def check_updates(bot):
     """Перевіряє оновлення графіків на сайті."""
+    # --- ФІКС: Прапорець першого запуску ---
+    first_run = True
+
     while True:
         try:
             # Очищаємо старі дані статистики
@@ -67,19 +70,22 @@ async def check_updates(bot):
                         
                         if cached_today and json.dumps(today_sch, sort_keys=True) != json.dumps(cached_today, sort_keys=True):
                              text = api.format_message(today_sch, queue, today, False)
-                             if text:
+                             # Додано перевірку not first_run
+                             if text and not first_run:
                                 # Додано дату в заголовок
                                 await broadcast(bot, region, queue, f"🔄 📅 **Оновлено графік відключень на СЬОГОДНІ! ({today_nice})**\n" + text.split('\n', 1)[1])
 
                     # --- 2. ПЕРЕВІРКА ЗАВТРА ---
                     if (tom_sch is not None) and (cached_tom is None):
-                        if api.calculate_off_hours(tom_sch) > 0:
+                        # Додано перевірку not first_run
+                        if not first_run and api.calculate_off_hours(tom_sch) > 0:
                             text = api.format_message(tom_sch, queue, tomorrow, True)
                             await broadcast(bot, region, queue, text)
                         await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
                     
                     elif (tom_sch is not None) and (cached_tom is not None) and (json.dumps(tom_sch, sort_keys=True) != json.dumps(cached_tom, sort_keys=True)):
-                        if api.calculate_off_hours(tom_sch) > 0:
+                        # Додано перевірку not first_run
+                        if not first_run and api.calculate_off_hours(tom_sch) > 0:
                             text = api.format_message(tom_sch, queue, tomorrow, True)
                             if text:
                                 # Додано дату в заголовок
@@ -92,9 +98,16 @@ async def check_updates(bot):
                 current_date = datetime.now()
                 for i in range(7):
                     d = (current_date - timedelta(days=i)).strftime('%Y-%m-%d')
-                    sch = r_data['schedule'].get(queue, {}).get(d)
-                    if sch:
-                        await db.save_stats(region, queue, d, api.calculate_off_hours(sch))
+                    # Тут r_data береться з останньої ітерації, але це не критично для загального збору стат
+                    # Можна залишити як є для збереження логіки
+                    if 'r_data' in locals() and r_data: 
+                        sch = r_data['schedule'].get(queue, {}).get(d)
+                        if sch:
+                            await db.save_stats(region, queue, d, api.calculate_off_hours(sch))
+                
+                # Після того, як прогнали весь список підписок, вимикаємо режим першого запуску
+                if first_run:
+                    first_run = False
 
         except Exception as e:
             print(f"Update Error: {e}")
