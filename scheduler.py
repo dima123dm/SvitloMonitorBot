@@ -69,7 +69,7 @@ async def check_updates(bot):
                              text = api.format_message(today_sch, queue, today, False)
                              if text:
                                 # Додано дату в заголовок
-                                await broadcast(bot, region, queue, f"🔄 📅 **Оновлено графік на СЬОГОДНІ ({today_nice})!**\n" + text.split('\n', 1)[1])
+                                await broadcast(bot, region, queue, f"🔄 📅 **Оновлено графік відключень на СЬОГОДНІ! ({today_nice})**\n" + text.split('\n', 1)[1])
 
                     # --- 2. ПЕРЕВІРКА ЗАВТРА ---
                     if (tom_sch is not None) and (cached_tom is None):
@@ -83,7 +83,7 @@ async def check_updates(bot):
                             text = api.format_message(tom_sch, queue, tomorrow, True)
                             if text:
                                 # Додано дату в заголовок
-                                await broadcast(bot, region, queue, f"🔄 🔮 **Оновлено графік на ЗАВТРА ({tomorrow_nice})!**\n" + text.split('\n', 1)[1])
+                                await broadcast(bot, region, queue, f"🔄 🔮 **Оновлено графік відключень на ЗАВТРА! ({tomorrow_nice})**\n" + text.split('\n', 1)[1])
                         await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
 
                     schedules_cache[(region, queue)] = {"today": today_sch, "tomorrow": tom_sch}
