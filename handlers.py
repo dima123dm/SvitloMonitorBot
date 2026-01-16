@@ -7,6 +7,7 @@ from aiogram.types import KeyboardButton, InlineKeyboardButton
 
 import database as db
 import api_utils as api
+import scheduler  # <--- Імпорт для доступу до кешу
 
 ADMIN_ID = 723550550  # Ваш ID адміна
 
@@ -92,13 +93,25 @@ async def select_queue(callback: types.CallbackQuery):
 
 async def show_today_schedule(message, region, queue):
     today = get_local_now().strftime('%Y-%m-%d')
-    data = await api.fetch_api_data()
     schedule = None
-    if data:
-        for r in data['regions']:
-            if r['name_ua'] == region:
-                schedule = r['schedule'].get(queue, {}).get(today)
-                break
+    
+    # --- ОПТИМІЗАЦІЯ (SMART CACHE) ---
+    # Перевіряємо, чи є запис у кеші
+    cached_data = scheduler.schedules_cache.get((region, queue))
+    
+    if cached_data is not None:
+        # Якщо запис є - беремо з нього (навіть якщо там None)
+        # Ми НЕ йдемо до API, бо кеш знає, що графіка немає.
+        schedule = cached_data.get("today")
+    else:
+        # Кеш порожній (бот тільки запустився) - йдемо до API
+        data = await api.fetch_api_data()
+        if data:
+            for r in data['regions']:
+                if r['name_ua'] == region:
+                    schedule = r['schedule'].get(queue, {}).get(today)
+                    break
+    
     if schedule:
         await db.save_stats(region, queue, today, api.calculate_off_hours(schedule))
     text = api.format_message(schedule, queue, today, is_tomorrow=False)
@@ -122,13 +135,25 @@ async def btn_tomorrow(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: return await message.answer("Спочатку налаштування.")
     tomorrow = (get_local_now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    data = await api.fetch_api_data()
+    
     schedule = None
-    if data:
-        for r in data['regions']:
-            if r['name_ua'] == user[0]:
-                schedule = r['schedule'].get(user[1], {}).get(tomorrow, None)
-                break
+    
+    # --- ОПТИМІЗАЦІЯ (SMART CACHE) ---
+    cached_data = scheduler.schedules_cache.get((user[0], user[1]))
+    
+    if cached_data is not None:
+        # Якщо кеш існує - довіряємо йому на 100%
+        # Якщо там None, значить API ще не дав графік, і ми не спамимо запитами.
+        schedule = cached_data.get("tomorrow")
+    else:
+        # Тільки якщо бот після рестарту і кеш пустий
+        data = await api.fetch_api_data()
+        if data:
+            for r in data['regions']:
+                if r['name_ua'] == user[0]:
+                    schedule = r['schedule'].get(user[1], {}).get(tomorrow, None)
+                    break
+                    
     if schedule:
         await db.save_stats(user[0], user[1], tomorrow, api.calculate_off_hours(schedule))
     text = api.format_message(schedule, user[1], tomorrow, is_tomorrow=True)

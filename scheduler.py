@@ -6,7 +6,7 @@ import api_utils as api
 import database as db
 from config import UPDATE_INTERVAL
 
-# Кеш в пам'яті
+# Кеш в пам'яті (цей словник ми будемо імпортувати в handlers.py)
 schedules_cache = {} 
 # Історія сповіщень
 alert_history = set()
@@ -43,6 +43,11 @@ async def check_updates(bot):
             if data:
                 today = datetime.now().strftime('%Y-%m-%d')
                 tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+                
+                # Форматуємо дати для красивого повідомлення (16.01)
+                today_nice = datetime.now().strftime('%d.%m')
+                tomorrow_nice = (datetime.now() + timedelta(days=1)).strftime('%d.%m')
+
                 subs = await db.get_all_subs()
 
                 for region, queue in subs:
@@ -63,7 +68,8 @@ async def check_updates(bot):
                         if cached_today and json.dumps(today_sch, sort_keys=True) != json.dumps(cached_today, sort_keys=True):
                              text = api.format_message(today_sch, queue, today, False)
                              if text:
-                                await broadcast(bot, region, queue, "🔄 📅 **Оновлено графік на СЬОГОДНІ!**\n" + text.split('\n', 1)[1])
+                                # Додано дату в заголовок
+                                await broadcast(bot, region, queue, f"🔄 📅 **Оновлено графік на СЬОГОДНІ ({today_nice})!**\n" + text.split('\n', 1)[1])
 
                     # --- 2. ПЕРЕВІРКА ЗАВТРА ---
                     if (tom_sch is not None) and (cached_tom is None):
@@ -75,7 +81,9 @@ async def check_updates(bot):
                     elif (tom_sch is not None) and (cached_tom is not None) and (json.dumps(tom_sch, sort_keys=True) != json.dumps(cached_tom, sort_keys=True)):
                         if api.calculate_off_hours(tom_sch) > 0:
                             text = api.format_message(tom_sch, queue, tomorrow, True)
-                            await broadcast(bot, region, queue, "🔄 🔮 **Оновлено графік на ЗАВТРА!**\n" + text.split('\n', 1)[1])
+                            if text:
+                                # Додано дату в заголовок
+                                await broadcast(bot, region, queue, f"🔄 🔮 **Оновлено графік на ЗАВТРА ({tomorrow_nice})!**\n" + text.split('\n', 1)[1])
                         await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
 
                     schedules_cache[(region, queue)] = {"today": today_sch, "tomorrow": tom_sch}
