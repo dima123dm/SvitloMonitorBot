@@ -1,5 +1,6 @@
 # handlers.py
 from datetime import datetime, timedelta
+import asyncio
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -127,13 +128,15 @@ async def btn_settings(message: types.Message):
 @router.message(F.text == "📅 Графік на сьогодні")
 async def btn_today(message: types.Message):
     user = await db.get_user(message.from_user.id)
-    if not user: return await message.answer("Спочатку зробіть налаштування.")
+    if not user: 
+        return await message.answer("Спочатку зробіть налаштування.")
     await show_today_schedule(message, user[0], user[1])
 
 @router.message(F.text == "🔮 Графік на завтра")
 async def btn_tomorrow(message: types.Message):
     user = await db.get_user(message.from_user.id)
-    if not user: return await message.answer("Спочатку налаштування.")
+    if not user: 
+        return await message.answer("Спочатку налаштування.")
     tomorrow = (get_local_now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
     schedule = None
@@ -162,7 +165,8 @@ async def btn_tomorrow(message: types.Message):
 @router.message(F.text == "📊 Аналітика")
 async def btn_stats(message: types.Message):
     user = await db.get_user(message.from_user.id)
-    if not user: return
+    if not user: 
+        return
 
     # Отримуємо дані з API для заповнення пропусків
     api_data = await api.fetch_api_data()
@@ -219,10 +223,11 @@ async def unsub_handler(callback: types.CallbackQuery):
     await callback.message.edit_text("🔕 **Ви успішно відписалися.**", parse_mode="Markdown")
 
 
-# ========== НОВА СИСТЕМА ПІДТРИМКИ ==========
+# ========== СИСТЕМА ПІДТРИМКИ ==========
 
 @router.message(F.text == "💬 Підтримка")
 async def btn_support(message: types.Message):
+    """Кнопка підтримки - переводить користувача в режим відправки повідомлення."""
     await message.answer(
         "💬 **Служба підтримки**\n\n"
         "Напишіть ваше повідомлення, і адміністратор відповість вам найближчим часом.", 
@@ -231,12 +236,30 @@ async def btn_support(message: types.Message):
     await db.set_user_mode(message.from_user.id, "support")
 
 
+@router.callback_query(F.data.startswith("user_reply|"))
+async def user_reply_click(callback: types.CallbackQuery):
+    """Користувач натиснув кнопку 'Відповісти' під повідомленням адміна."""
+    ticket_id = callback.data.split("|")[1]
+    
+    # Перевіряємо чи існує тікет
+    ticket_info = await db.get_ticket_info(int(ticket_id))
+    if not ticket_info:
+        await callback.answer("❌ Помилка: тікет не знайдено", show_alert=True)
+        return
+    
+    await db.set_user_mode(callback.from_user.id, f"user_replying:{ticket_id}")
+    await callback.message.answer("✍️ **Напишіть вашу відповідь:**", parse_mode="Markdown")
+    await callback.answer()
+
+
 # ========== АДМІН-ПАНЕЛЬ ==========
 
 @router.message(F.text == "👨‍💼 Адмін-панель")
 @router.message(Command("admin"))
 async def admin_menu(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    """Відкриває адмін-панель."""
+    if message.from_user.id != ADMIN_ID: 
+        return
     
     unread_count = await db.get_unread_count()
     
@@ -251,17 +274,27 @@ async def admin_menu(message: types.Message):
     kb.row(KeyboardButton(text=support_text), KeyboardButton(text="👥 Користувачів"))
     kb.row(KeyboardButton(text="🏠 Меню"))
     
-    await message.answer("👨‍💼 **Панель адміністратора**", reply_markup=kb.as_markup(resize_keyboard=True), parse_mode="Markdown")
+    await message.answer(
+        "👨‍💼 **Панель адміністратора**", 
+        reply_markup=kb.as_markup(resize_keyboard=True), 
+        parse_mode="Markdown"
+    )
+
 
 @router.message(F.text == "📨 Розсилка всім")
 async def broadcast_start(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
-    await message.answer("📨 **Розсилка всім**\nНапишіть текст повідомлення:")
+    """Починає процес розсилки."""
+    if message.from_user.id != ADMIN_ID: 
+        return
+    await message.answer("📨 **Розсилка всім**\nНапишіть текст повідомлення (максимум 4000 символів):")
     await db.set_user_mode(ADMIN_ID, "broadcast")
+
 
 @router.message(F.text.startswith("📋 Підтримка"))
 async def support_tickets_menu(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    """Відкриває меню тікетів підтримки."""
+    if message.from_user.id != ADMIN_ID: 
+        return
     
     kb = InlineKeyboardBuilder()
     kb.button(text="🔔 Непрочитані", callback_data="tickets|unread")
@@ -273,9 +306,12 @@ async def support_tickets_menu(message: types.Message):
     text = f"📋 **Служба підтримки**\n\n📌 Непрочитані: **{unread_count}**"
     await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
+
 @router.callback_query(F.data.startswith("tickets|"))
 async def show_tickets_list(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    """Показує список тікетів."""
+    if callback.from_user.id != ADMIN_ID: 
+        return
     
     ticket_type = callback.data.split("|")[1]
     
@@ -307,9 +343,12 @@ async def show_tickets_list(callback: types.CallbackQuery):
     kb.adjust(1)
     await callback.message.edit_text(f"{title}:", reply_markup=kb.as_markup())
 
+
 @router.callback_query(F.data.startswith("viewticket|"))
 async def view_ticket(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    """Показує деталі тікету."""
+    if callback.from_user.id != ADMIN_ID: 
+        return
     
     ticket_id = int(callback.data.split("|")[1])
     
@@ -349,18 +388,24 @@ async def view_ticket(callback: types.CallbackQuery):
     
     await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
+
 @router.callback_query(F.data.startswith("reply|"))
 async def admin_reply_click(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    """Адмін натискає кнопку відповіді."""
+    if callback.from_user.id != ADMIN_ID: 
+        return
     
     ticket_id = callback.data.split("|")[1]
     await db.set_user_mode(ADMIN_ID, f"replying:{ticket_id}")
     await callback.message.answer(f"✍️ **Введіть відповідь для тікету #{ticket_id}:**", parse_mode="Markdown")
     await callback.answer()
 
+
 @router.callback_query(F.data.startswith("close|"))
 async def close_ticket_handler(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    """Закриває тікет."""
+    if callback.from_user.id != ADMIN_ID: 
+        return
     
     ticket_id = int(callback.data.split("|")[1])
     await db.close_ticket(ticket_id)
@@ -369,9 +414,12 @@ async def close_ticket_handler(callback: types.CallbackQuery):
     # Оновлюємо відображення
     await view_ticket(callback)
 
+
 @router.callback_query(F.data.startswith("reopen|"))
 async def reopen_ticket_handler(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    """Відкриває тікет знову."""
+    if callback.from_user.id != ADMIN_ID: 
+        return
     
     ticket_id = int(callback.data.split("|")[1])
     await db.reopen_ticket(ticket_id)
@@ -380,15 +428,21 @@ async def reopen_ticket_handler(callback: types.CallbackQuery):
     # Оновлюємо відображення
     await view_ticket(callback)
 
+
 @router.message(F.text == "👥 Користувачів")
 async def users_count(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    """Показує кількість користувачів."""
+    if message.from_user.id != ADMIN_ID: 
+        return
     count = await db.get_users_count()
     await message.answer(f"👥 **Всього користувачів:** {count}", parse_mode="Markdown")
 
+
 @router.message(F.text == "🏠 Меню")
 async def back_to_main(message: types.Message):
-    if message.from_user.id != ADMIN_ID: return
+    """Повертається в головне меню."""
+    if message.from_user.id != ADMIN_ID: 
+        return
     await message.answer("🏠 **Головне меню.**", reply_markup=get_main_keyboard(ADMIN_ID), parse_mode="Markdown")
     await db.set_user_mode(ADMIN_ID, "normal")
 
@@ -397,21 +451,35 @@ async def back_to_main(message: types.Message):
 
 @router.message(F.text)
 async def handle_text_messages(message: types.Message):
+    """Єдиний обробник всіх текстових повідомлень залежно від режиму користувача."""
     user_id = message.from_user.id
     mode = await db.get_user_mode(user_id)
 
     # 1. АДМІН: РОЗСИЛКА
     if user_id == ADMIN_ID and mode == "broadcast":
+        # Перевірка довжини повідомлення
+        if len(message.text) > 4000:
+            await message.answer("❌ **Повідомлення занадто довге!** Максимум 4000 символів.", parse_mode="Markdown")
+            return
+        
         users = await db.get_all_users_for_broadcast()
         sent, failed = 0, 0
         if users:
             await message.answer(f"📤 Відправка {len(users)} користувачам...")
             for (uid,) in users:
                 try:
-                    await message.bot.send_message(uid, f"📢 **Сповіщення:**\n\n{message.text}", parse_mode="Markdown")
+                    await message.bot.send_message(
+                        uid, 
+                        f"📢 **Сповіщення:**\n\n{message.text}", 
+                        parse_mode="Markdown"
+                    )
                     sent += 1
-                except: 
+                    # Невелика затримка щоб уникнути rate limit
+                    await asyncio.sleep(0.05)
+                except Exception as e:
                     failed += 1
+                    print(f"Помилка відправки користувачу {uid}: {e}")
+            
             await message.answer(f"✅ **Розсилка завершена!**\n✓ {sent} / ✗ {failed}", parse_mode="Markdown")
         else:
             await message.answer("❌ Немає користувачів.")
@@ -423,6 +491,11 @@ async def handle_text_messages(message: types.Message):
     # 2. АДМІН: ВІДПОВІДЬ НА ТІКЕТ
     if user_id == ADMIN_ID and mode.startswith("replying:"):
         ticket_id = int(mode.split(":")[1])
+        
+        # Перевірка довжини повідомлення
+        if len(message.text) > 3000:
+            await message.answer("❌ **Повідомлення занадто довге!** Максимум 3000 символів.", parse_mode="Markdown")
+            return
         
         # Отримуємо інфо про тікет
         ticket_info = await db.get_ticket_info(ticket_id)
@@ -448,7 +521,7 @@ async def handle_text_messages(message: types.Message):
                 reply_markup=kb.as_markup(),
                 parse_mode="Markdown"
             )
-            await message.answer(f"✅ Відповідь надіслано користувачу!")
+            await message.answer("✅ Відповідь надіслано користувачу!")
         except Exception as e:
             await message.answer(f"❌ Не вдалося надіслати: {e}")
         
@@ -456,8 +529,13 @@ async def handle_text_messages(message: types.Message):
         await message.answer("🏠 Головне меню", reply_markup=get_main_keyboard(ADMIN_ID))
         return
 
-    # 3. КОРИСТУВАЧ: ПІДТРИМКА
+    # 3. КОРИСТУВАЧ: ПІДТРИМКА (перше повідомлення)
     if mode == "support":
+        # Перевірка довжини повідомлення
+        if len(message.text) > 3000:
+            await message.answer("❌ **Повідомлення занадто довге!** Максимум 3000 символів.\n\nСпробуйте коротше або розділіть на кілька повідомлень.", parse_mode="Markdown")
+            return
+        
         # Створюємо або отримуємо тікет
         username = message.from_user.username or "Unknown"
         ticket_id = await db.create_or_get_ticket(user_id, username)
@@ -490,28 +568,15 @@ async def handle_text_messages(message: types.Message):
         await message.answer("🏠 Головне меню", reply_markup=get_main_keyboard(user_id))
         return
 
-
-# ========== КНОПКА ВІДПОВІДІ КОРИСТУВАЧА ==========
-
-@router.callback_query(F.data.startswith("user_reply|"))
-async def user_reply_click(callback: types.CallbackQuery):
-    """Користувач натиснув кнопку 'Відповісти' під повідомленням адміна."""
-    ticket_id = callback.data.split("|")[1]
-    
-    await db.set_user_mode(callback.from_user.id, f"user_replying:{ticket_id}")
-    await callback.message.answer("✍️ **Напишіть вашу відповідь:**", parse_mode="Markdown")
-    await callback.answer()
-
-# Додамо обробку відповіді користувача
-@router.message(F.text)
-async def handle_user_reply(message: types.Message):
-    user_id = message.from_user.id
-    mode = await db.get_user_mode(user_id)
-    
     # 4. КОРИСТУВАЧ: ВІДПОВІДЬ В ТІКЕТ
     if mode.startswith("user_replying:"):
         ticket_id = int(mode.split(":")[1])
         username = message.from_user.username or "Unknown"
+        
+        # Перевірка довжини повідомлення
+        if len(message.text) > 3000:
+            await message.answer("❌ **Повідомлення занадто довге!** Максимум 3000 символів.", parse_mode="Markdown")
+            return
         
         # Зберігаємо повідомлення
         await db.save_support_message(ticket_id, "user", message.text)
@@ -542,3 +607,6 @@ async def handle_user_reply(message: types.Message):
         await db.set_user_mode(user_id, "normal")
         await message.answer("🏠 Головне меню", reply_markup=get_main_keyboard(user_id))
         return
+
+    # 5. НЕРОЗПІЗНАНА КОМАНДА
+    await message.answer("❓ Не розумію вашу команду. Використовуйте кнопки меню.")
