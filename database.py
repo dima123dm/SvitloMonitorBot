@@ -4,9 +4,10 @@ from datetime import datetime, timedelta
 from config import DB_NAME
 
 async def init_db():
-    """Створює таблиці, якщо їх ще немає."""
+    """Створює таблиці та безпечно оновлює структуру підтримки."""
     async with aiosqlite.connect(DB_NAME) as db:
-        # Таблиця для користувачів (хто на що підписаний)
+        # === 1. ОСНОВНІ ДАНІ (НЕ ЧІПАЄМО) ===
+        # Таблиця для користувачів
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -15,7 +16,7 @@ async def init_db():
                 mode TEXT DEFAULT 'normal'
             )
         """)
-        # Таблиця для статистики (дата, черга, кількість годин без світла)
+        # Таблиця для статистики
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
                 date TEXT,
@@ -26,9 +27,24 @@ async def init_db():
             )
         """)
         
-        # === НОВА СИСТЕМА ПІДТРИМКИ ===
+        # === 2. ПЕРЕВІРКА І ВИПРАВЛЕННЯ ТІЛЬКИ ТАБЛИЦЬ ПІДТРИМКИ ===
+        # Перевіряємо, чи існує таблиця support_messages і чи є в ній колонка ticket_id
+        try:
+            async with db.execute("PRAGMA table_info(support_messages)") as cur:
+                columns = [row[1] for row in await cur.fetchall()]
+                # Якщо таблиця є, але в ній немає потрібної колонки 'ticket_id'
+                if columns and 'ticket_id' not in columns:
+                    print("⚠️ Оновлення структури таблиць підтримки... (Основні дані збережено)")
+                    # Видаляємо тільки старі таблиці підтримки, бо вони не сумісні з новим кодом
+                    await db.execute("DROP TABLE IF EXISTS support_messages")
+                    await db.execute("DROP TABLE IF EXISTS support_tickets")
+                    await db.commit()
+        except Exception as e:
+            print(f"Non-critical DB check error: {e}")
+
+        # === 3. СТВОРЕННЯ ТАБЛИЦЬ ПІДТРИМКИ (ЯКЩО ЇХ НЕМАЄ) ===
         
-        # Таблиця тікетів підтримки
+        # Таблиця тікетів
         await db.execute("""
             CREATE TABLE IF NOT EXISTS support_tickets (
                 ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +57,7 @@ async def init_db():
             )
         """)
         
-        # Таблиця повідомлень в тікетах
+        # Таблиця повідомлень
         await db.execute("""
             CREATE TABLE IF NOT EXISTS support_messages (
                 message_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +100,6 @@ async def save_stats(region, queue, date_str, off_hours):
 async def get_stats_data(region, queue):
     """Отримує статистику за останні 7 днів (від сьогодні і назад)."""
     async with aiosqlite.connect(DB_NAME) as db:
-        # Беремо останні 7 днів від сьогодні, сортуємо від старого до нового
         sql = """
             SELECT date, off_hours 
             FROM daily_stats 
@@ -94,7 +109,6 @@ async def get_stats_data(region, queue):
         """
         async with db.execute(sql, (region, queue)) as cur:
             rows = await cur.fetchall()
-            # Розвертаємо, щоб мати від старого до нового
             return list(reversed(rows))
 
 async def get_all_subs():
@@ -147,7 +161,6 @@ async def get_all_users_for_broadcast():
 async def cleanup_old_stats():
     """Видаляє статистику старше 7 днів."""
     async with aiosqlite.connect(DB_NAME) as db:
-        # Видаляємо записи, де дата старше ніж 7 днів від сьогодні
         cutoff_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
         await db.execute("DELETE FROM daily_stats WHERE date < ?", (cutoff_date,))
         await db.commit()

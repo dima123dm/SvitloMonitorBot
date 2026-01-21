@@ -19,6 +19,8 @@ async def broadcast(bot, region, queue, text):
             await bot.send_message(uid, text, parse_mode="Markdown")
         except:
             pass
+        # Невелика затримка, щоб уникнути блокування за флуд
+        await asyncio.sleep(0.05)
 
 def find_next_outage(current_time_str, today_intervals, tomorrow_intervals):
     """Шукає час наступного відключення."""
@@ -98,8 +100,6 @@ async def check_updates(bot):
                 current_date = datetime.now()
                 for i in range(7):
                     d = (current_date - timedelta(days=i)).strftime('%Y-%m-%d')
-                    # Тут r_data береться з останньої ітерації, але це не критично для загального збору стат
-                    # Можна залишити як є для збереження логіки
                     if 'r_data' in locals() and r_data: 
                         sch = r_data['schedule'].get(queue, {}).get(d)
                         if sch:
@@ -126,7 +126,8 @@ async def check_alerts(bot):
             if curr_time == "00:00": 
                 alert_history.clear()
 
-            for (key, data) in schedules_cache.items():
+            # ВАЖЛИВО: Використовуємо list(), щоб створити копію і не поламати цикл при оновленні кешу
+            for (key, data) in list(schedules_cache.items()):
                 today_sch = data.get("today")
                 tom_sch = data.get("tomorrow")
                 
@@ -137,8 +138,7 @@ async def check_alerts(bot):
 
                 # --- 1. СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ (PRE-ALERT) ---
                 for start, end in today_intervals:
-                    # ВАЖЛИВО: Ігноруємо "00:00" з поточного дня, бо це вже минуле (початок дня).
-                    # Сповіщення про 00:00 обробляється окремим блоком нижче.
+                    # ВАЖЛИВО: Ігноруємо "00:00" з поточного дня
                     if start == "00:00":
                         continue
 
@@ -162,8 +162,6 @@ async def check_alerts(bot):
                             alert_history.add(alert_id)
                 
                 # --- Стик днів (23:55 -> 00:00) ---
-                # Якщо зараз 23:55, то pre_time стає "00:00".
-                # Саме в цей момент перевіряємо початок завтрашнього графіку.
                 if pre_time == "00:00" and tom_intervals:
                     start_tom, end_tom = tom_intervals[0]
                     if start_tom == "00:00":
