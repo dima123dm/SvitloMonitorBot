@@ -339,10 +339,6 @@ async def view_ticket(callback: types.CallbackQuery):
     
     ticket_id = int(callback.data.split("|")[1])
     
-    # ФІКС: Прибрали автоматичне позначення "прочитано" при перегляді.
-    # Тепер прочитаним стане тільки після відповіді.
-    # await db.mark_ticket_read(ticket_id) 
-    
     ticket_info = await db.get_ticket_info(ticket_id)
     if not ticket_info:
         await callback.message.edit_text("❌ Тікет не знайдено")
@@ -512,24 +508,24 @@ async def handle_text_messages(message: types.Message):
         await db.save_support_message(ticket_id, "user", message.text)
         
         try:
-            # ФІКС: Додали кнопку відповіді прямо в сповіщення
             kb = InlineKeyboardBuilder()
             kb.button(text="✍️ Відповісти", callback_data=f"reply|{ticket_id}")
             kb.button(text="📋 Переглянути", callback_data=f"viewticket|{ticket_id}")
             
             display_text = message.text[:500] + "..." if len(message.text) > 500 else message.text
             
-            # ФІКС: додали @ до ніка
+            # === ФІКС: ПРИБРАНО parse_mode ДЛЯ АДМІНА ===
+            # Це гарантує доставку повідомлення, навіть якщо нікнейм містить '_'
             await message.bot.send_message(
                 ADMIN_ID,
-                f"🔔 **Нове повідомлення в тікеті #{ticket_id}**\n"
+                f"🔔 Нове повідомлення в тікеті #{ticket_id}\n"
                 f"👤 @{username} (ID: {user_id})\n\n"
                 f"💬 {display_text}",
-                reply_markup=kb.as_markup(),
-                parse_mode="Markdown"
+                reply_markup=kb.as_markup()
             )
             await message.answer("✅ Повідомлення відправлено! Адміністратор відповість найближчим часом.")
-        except Exception:
+        except Exception as e:
+            print(f"Помилка відправки адміну: {e}")
             await message.answer("✅ Повідомлення збережено!")
         
         await db.set_user_mode(user_id, "normal")
@@ -549,23 +545,23 @@ async def handle_text_messages(message: types.Message):
         await db.reopen_ticket(ticket_id)
         
         try:
-            # ФІКС: Додали кнопку відповіді прямо в сповіщення
             kb = InlineKeyboardBuilder()
             kb.button(text="✍️ Відповісти", callback_data=f"reply|{ticket_id}")
             kb.button(text="📋 Переглянути", callback_data=f"viewticket|{ticket_id}")
             
             display_text = message.text[:500] + "..." if len(message.text) > 500 else message.text
             
+            # === ФІКС: ПРИБРАНО parse_mode ДЛЯ АДМІНА ===
             await message.bot.send_message(
                 ADMIN_ID,
-                f"🔔 **Нова відповідь в тікеті #{ticket_id}**\n"
+                f"🔔 Нова відповідь в тікеті #{ticket_id}\n"
                 f"👤 @{username} (ID: {user_id})\n\n"
                 f"💬 {display_text}",
-                reply_markup=kb.as_markup(),
-                parse_mode="Markdown"
+                reply_markup=kb.as_markup()
             )
             await message.answer("✅ Відповідь відправлена!")
-        except Exception:
+        except Exception as e:
+            print(f"Помилка: {e}")
             await message.answer("✅ Відповідь збережена!")
         
         await db.set_user_mode(user_id, "normal")
