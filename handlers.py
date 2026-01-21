@@ -218,23 +218,37 @@ async def unsub_handler(callback: types.CallbackQuery):
     await db.delete_user(callback.from_user.id)
     await callback.message.edit_text("🔕 **Ви успішно відписалися.**", parse_mode="Markdown")
 
+
+# ========== НОВА СИСТЕМА ПІДТРИМКИ ==========
+
 @router.message(F.text == "💬 Підтримка")
 async def btn_support(message: types.Message):
-    await message.answer("💬 **Служба підтримки**\nНапишіть ваше повідомлення, і адміністратор відповість вам.", parse_mode="Markdown")
+    await message.answer(
+        "💬 **Служба підтримки**\n\n"
+        "Напишіть ваше повідомлення, і адміністратор відповість вам найближчим часом.", 
+        parse_mode="Markdown"
+    )
     await db.set_user_mode(message.from_user.id, "support")
 
 
 # ========== АДМІН-ПАНЕЛЬ ==========
 
-# Цей хендлер ловить і команду /admin, і текст кнопки
 @router.message(F.text == "👨‍💼 Адмін-панель")
 @router.message(Command("admin"))
 async def admin_menu(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     
+    unread_count = await db.get_unread_count()
+    
     kb = ReplyKeyboardBuilder()
     kb.row(KeyboardButton(text="📨 Розсилка всім"))
-    kb.row(KeyboardButton(text="📋 Підтримка"), KeyboardButton(text="👥 Користувачів"))
+    
+    # Показуємо кількість непрочитаних
+    support_text = f"📋 Підтримка"
+    if unread_count > 0:
+        support_text += f" ({unread_count})"
+    
+    kb.row(KeyboardButton(text=support_text), KeyboardButton(text="👥 Користувачів"))
     kb.row(KeyboardButton(text="🏠 Меню"))
     
     await message.answer("👨‍💼 **Панель адміністратора**", reply_markup=kb.as_markup(resize_keyboard=True), parse_mode="Markdown")
@@ -245,15 +259,126 @@ async def broadcast_start(message: types.Message):
     await message.answer("📨 **Розсилка всім**\nНапишіть текст повідомлення:")
     await db.set_user_mode(ADMIN_ID, "broadcast")
 
-@router.message(F.text == "📋 Підтримка")
-async def support_messages_list(message: types.Message):
+@router.message(F.text.startswith("📋 Підтримка"))
+async def support_tickets_menu(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
-    messages = await db.get_all_support_messages()
-    if not messages: return await message.answer("📋 **Немає повідомлень.**")
-    text = "📋 **Останні повідомлення:**\n\n"
-    for msg in messages[:5]:
-        text += (f"👤 @{msg[2]} (ID: {msg[1]})\n💬 {msg[3]}\n⏰ {msg[4]}\n─────────────────\n")
-    await message.answer(text, parse_mode="Markdown")
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔔 Непрочитані", callback_data="tickets|unread")
+    kb.button(text="📋 Всі звернення", callback_data="tickets|all")
+    kb.adjust(2)
+    
+    unread_count = await db.get_unread_count()
+    
+    text = f"📋 **Служба підтримки**\n\n📌 Непрочитані: **{unread_count}**"
+    await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("tickets|"))
+async def show_tickets_list(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    ticket_type = callback.data.split("|")[1]
+    
+    if ticket_type == "unread":
+        tickets = await db.get_unread_tickets()
+        title = "🔔 Непрочитані звернення"
+    else:
+        tickets = await db.get_all_tickets()
+        title = "📋 Всі звернення"
+    
+    if not tickets:
+        await callback.message.edit_text(f"{title}\n\n✅ Немає звернень", parse_mode="Markdown")
+        return
+    
+    kb = InlineKeyboardBuilder()
+    
+    for ticket in tickets:
+        ticket_id, user_id, username, *rest = ticket
+        
+        if ticket_type == "all":
+            status = rest[0]
+            status_icon = "🔴" if status == "unread" else "✅" if status == "read" else "🔒"
+            button_text = f"{status_icon} {username or 'User'} (ID: {user_id})"
+        else:
+            button_text = f"🔴 {username or 'User'} (ID: {user_id})"
+        
+        kb.button(text=button_text, callback_data=f"viewticket|{ticket_id}")
+    
+    kb.adjust(1)
+    await callback.message.edit_text(f"{title}:", reply_markup=kb.as_markup())
+
+@router.callback_query(F.data.startswith("viewticket|"))
+async def view_ticket(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    ticket_id = int(callback.data.split("|")[1])
+    
+    # Позначаємо як прочитане
+    await db.mark_ticket_read(ticket_id)
+    
+    # Отримуємо інфо про тікет
+    ticket_info = await db.get_ticket_info(ticket_id)
+    if not ticket_info:
+        await callback.message.edit_text("❌ Тікет не знайдено")
+        return
+    
+    user_id, username, status = ticket_info
+    
+    # Отримуємо всі повідомлення
+    messages = await db.get_ticket_messages(ticket_id)
+    
+    text = f"💬 **Звернення #{ticket_id}**\n"
+    text += f"👤 {username or 'Unknown'} (ID: {user_id})\n"
+    text += f"📊 Статус: {status}\n"
+    text += "─────────────────\n\n"
+    
+    for from_user, msg_text, created_at in messages:
+        icon = "👤" if from_user == "user" else "👨‍💼"
+        # Обрізаємо довгі повідомлення
+        display_text = msg_text[:200] + "..." if len(msg_text) > 200 else msg_text
+        text += f"{icon} **{from_user}**: {display_text}\n⏰ {created_at}\n\n"
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✍️ Відповісти", callback_data=f"reply|{ticket_id}")
+    if status != "closed":
+        kb.button(text="🔒 Закрити", callback_data=f"close|{ticket_id}")
+    else:
+        kb.button(text="🔓 Відкрити знову", callback_data=f"reopen|{ticket_id}")
+    kb.button(text="◀️ Назад", callback_data="tickets|unread")
+    kb.adjust(2, 2, 1)
+    
+    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("reply|"))
+async def admin_reply_click(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    ticket_id = callback.data.split("|")[1]
+    await db.set_user_mode(ADMIN_ID, f"replying:{ticket_id}")
+    await callback.message.answer(f"✍️ **Введіть відповідь для тікету #{ticket_id}:**", parse_mode="Markdown")
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("close|"))
+async def close_ticket_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    ticket_id = int(callback.data.split("|")[1])
+    await db.close_ticket(ticket_id)
+    await callback.answer("✅ Тікет закрито", show_alert=True)
+    
+    # Оновлюємо відображення
+    await view_ticket(callback)
+
+@router.callback_query(F.data.startswith("reopen|"))
+async def reopen_ticket_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    ticket_id = int(callback.data.split("|")[1])
+    await db.reopen_ticket(ticket_id)
+    await callback.answer("✅ Тікет відкрито знову", show_alert=True)
+    
+    # Оновлюємо відображення
+    await view_ticket(callback)
 
 @router.message(F.text == "👥 Користувачів")
 async def users_count(message: types.Message):
@@ -264,26 +389,11 @@ async def users_count(message: types.Message):
 @router.message(F.text == "🏠 Меню")
 async def back_to_main(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
-    # Повертаємо клавіатуру, передаючи ID, щоб кнопка адміна не зникла
     await message.answer("🏠 **Головне меню.**", reply_markup=get_main_keyboard(ADMIN_ID), parse_mode="Markdown")
     await db.set_user_mode(ADMIN_ID, "normal")
 
 
-# ========== ОБРОБКА ВІДПОВІДІ АДМІНА (КНОПКА) ==========
-
-@router.callback_query(F.data.startswith("reply_user|"))
-async def admin_reply_click(callback: types.CallbackQuery):
-    """Адмін натиснув кнопку 'Відповісти' під повідомленням."""
-    if callback.from_user.id != ADMIN_ID: return
-
-    user_id = callback.data.split("|")[1]
-    # Встановлюємо спец-режим для адміна: "replyING:12345"
-    await db.set_user_mode(ADMIN_ID, f"replyING:{user_id}")
-    await callback.message.answer(f"✍️ **Введіть відповідь для користувача (ID {user_id}):**")
-    await callback.answer()
-
-
-# ========== ЄДИНИЙ ОБРОБНИК ТЕКСТУ ==========
+# ========== ОБРОБКА ТЕКСТОВИХ ПОВІДОМЛЕНЬ ==========
 
 @router.message(F.text)
 async def handle_text_messages(message: types.Message):
@@ -300,7 +410,8 @@ async def handle_text_messages(message: types.Message):
                 try:
                     await message.bot.send_message(uid, f"📢 **Сповіщення:**\n\n{message.text}", parse_mode="Markdown")
                     sent += 1
-                except: failed += 1
+                except: 
+                    failed += 1
             await message.answer(f"✅ **Розсилка завершена!**\n✓ {sent} / ✗ {failed}", parse_mode="Markdown")
         else:
             await message.answer("❌ Немає користувачів.")
@@ -309,16 +420,35 @@ async def handle_text_messages(message: types.Message):
         await message.answer("🏠 Головне меню", reply_markup=get_main_keyboard(ADMIN_ID))
         return
 
-    # 2. АДМІН: ВІДПОВІДЬ (режим replyING)
-    if user_id == ADMIN_ID and mode.startswith("replyING:"):
-        target_user_id = mode.split(":")[1]
+    # 2. АДМІН: ВІДПОВІДЬ НА ТІКЕТ
+    if user_id == ADMIN_ID and mode.startswith("replying:"):
+        ticket_id = int(mode.split(":")[1])
+        
+        # Отримуємо інфо про тікет
+        ticket_info = await db.get_ticket_info(ticket_id)
+        if not ticket_info:
+            await message.answer("❌ Тікет не знайдено")
+            await db.set_user_mode(ADMIN_ID, "normal")
+            return
+        
+        target_user_id, username, status = ticket_info
+        
+        # Зберігаємо повідомлення адміна
+        await db.save_support_message(ticket_id, "admin", message.text)
+        
+        # Відправляємо користувачу
         try:
+            # Створюємо кнопку для відповіді
+            kb = InlineKeyboardBuilder()
+            kb.button(text="✍️ Відповісти", callback_data=f"user_reply|{ticket_id}")
+            
             await message.bot.send_message(
-                target_user_id, 
-                f"📞 **Служба підтримки:**\n\n{message.text}", 
+                target_user_id,
+                f"📞 **Служба підтримки:**\n\n{message.text}",
+                reply_markup=kb.as_markup(),
                 parse_mode="Markdown"
             )
-            await message.answer(f"✅ Відповідь надіслано користувачу {target_user_id}!")
+            await message.answer(f"✅ Відповідь надіслано користувачу!")
         except Exception as e:
             await message.answer(f"❌ Не вдалося надіслати: {e}")
         
@@ -328,22 +458,86 @@ async def handle_text_messages(message: types.Message):
 
     # 3. КОРИСТУВАЧ: ПІДТРИМКА
     if mode == "support":
-        await db.save_support_message(user_id, message.from_user.username or "Unknown", message.text)
+        # Створюємо або отримуємо тікет
+        username = message.from_user.username or "Unknown"
+        ticket_id = await db.create_or_get_ticket(user_id, username)
         
-        # Створюємо кнопку для відповіді
-        kb = InlineKeyboardBuilder()
-        kb.button(text="↩️ Відповісти", callback_data=f"reply_user|{user_id}")
+        # Зберігаємо повідомлення
+        await db.save_support_message(ticket_id, "user", message.text)
         
         try:
+            # Створюємо кнопку для адміна
+            kb = InlineKeyboardBuilder()
+            kb.button(text="📋 Переглянути тікет", callback_data=f"viewticket|{ticket_id}")
+            
+            # Обрізаємо текст якщо він занадто довгий
+            display_text = message.text[:500] + "..." if len(message.text) > 500 else message.text
+            
             await message.bot.send_message(
                 ADMIN_ID,
-                f"💬 **Нове повідомлення!**\n👤 @{message.from_user.username} (ID: {user_id})\n\n{message.text}",
+                f"🔔 **Нове повідомлення в тікеті #{ticket_id}**\n"
+                f"👤 @{username} (ID: {user_id})\n\n"
+                f"💬 {display_text}",
                 reply_markup=kb.as_markup(),
                 parse_mode="Markdown"
             )
-            await message.answer("✅ Повідомлення відправлено!")
-        except:
-            await message.answer("❌ Помилка відправки (можливо, адмін не запустив бота).")
+            await message.answer("✅ Повідомлення відправлено! Адміністратор відповість найближчим часом.")
+        except Exception as e:
+            print(f"Помилка відправки повідомлення адміну: {e}")
+            await message.answer("✅ Повідомлення збережено!")
+        
+        await db.set_user_mode(user_id, "normal")
+        await message.answer("🏠 Головне меню", reply_markup=get_main_keyboard(user_id))
+        return
+
+
+# ========== КНОПКА ВІДПОВІДІ КОРИСТУВАЧА ==========
+
+@router.callback_query(F.data.startswith("user_reply|"))
+async def user_reply_click(callback: types.CallbackQuery):
+    """Користувач натиснув кнопку 'Відповісти' під повідомленням адміна."""
+    ticket_id = callback.data.split("|")[1]
+    
+    await db.set_user_mode(callback.from_user.id, f"user_replying:{ticket_id}")
+    await callback.message.answer("✍️ **Напишіть вашу відповідь:**", parse_mode="Markdown")
+    await callback.answer()
+
+# Додамо обробку відповіді користувача
+@router.message(F.text)
+async def handle_user_reply(message: types.Message):
+    user_id = message.from_user.id
+    mode = await db.get_user_mode(user_id)
+    
+    # 4. КОРИСТУВАЧ: ВІДПОВІДЬ В ТІКЕТ
+    if mode.startswith("user_replying:"):
+        ticket_id = int(mode.split(":")[1])
+        username = message.from_user.username or "Unknown"
+        
+        # Зберігаємо повідомлення
+        await db.save_support_message(ticket_id, "user", message.text)
+        
+        # Знову відкриваємо тікет якщо він був закритий
+        await db.reopen_ticket(ticket_id)
+        
+        try:
+            # Створюємо кнопку для адміна
+            kb = InlineKeyboardBuilder()
+            kb.button(text="📋 Переглянути тікет", callback_data=f"viewticket|{ticket_id}")
+            
+            display_text = message.text[:500] + "..." if len(message.text) > 500 else message.text
+            
+            await message.bot.send_message(
+                ADMIN_ID,
+                f"🔔 **Нова відповідь в тікеті #{ticket_id}**\n"
+                f"👤 @{username} (ID: {user_id})\n\n"
+                f"💬 {display_text}",
+                reply_markup=kb.as_markup(),
+                parse_mode="Markdown"
+            )
+            await message.answer("✅ Відповідь відправлена!")
+        except Exception as e:
+            print(f"Помилка: {e}")
+            await message.answer("✅ Відповідь збережена!")
         
         await db.set_user_mode(user_id, "normal")
         await message.answer("🏠 Головне меню", reply_markup=get_main_keyboard(user_id))

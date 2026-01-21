@@ -25,16 +25,34 @@ async def init_db():
                 PRIMARY KEY (date, region, queue)
             )
         """)
-        # Таблиця для повідомлень підтримки
+        
+        # === НОВА СИСТЕМА ПІДТРИМКИ ===
+        
+        # Таблиця тікетів підтримки
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS support_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
                 username TEXT,
-                text TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                status TEXT DEFAULT 'unread',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_message_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         """)
+        
+        # Таблиця повідомлень в тікетах
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS support_messages (
+                message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                from_user TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES support_tickets(ticket_id)
+            )
+        """)
+        
         await db.commit()
 
 async def save_user(user_id, region, queue):
@@ -90,6 +108,7 @@ async def get_users_by_queue(region, queue):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id FROM users WHERE region = ? AND queue = ?", (region, queue)) as cur:
             return await cur.fetchall()
+
 async def delete_user(user_id):
     """Видаляє користувача з бази даних (відписка)."""
     async with aiosqlite.connect(DB_NAME) as db:
@@ -111,23 +130,6 @@ async def get_user_mode(user_id):
         async with db.execute("SELECT mode FROM users WHERE user_id = ?", (user_id,)) as cur:
             row = await cur.fetchone()
             return row[0] if row else "normal"
-
-async def save_support_message(user_id, username, text):
-    """Зберігає повідомлення від користувача в підтримці."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT INTO support_messages (user_id, username, text) VALUES (?, ?, ?)",
-            (user_id, username, text)
-        )
-        await db.commit()
-
-async def get_all_support_messages():
-    """Отримує всі повідомлення підтримки."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT id, user_id, username, text, timestamp FROM support_messages ORDER BY timestamp DESC"
-        ) as cur:
-            return await cur.fetchall()
 
 async def get_users_count():
     """Отримує кількість всіх користувачів."""
@@ -156,3 +158,120 @@ async def get_off_hours_for_date(region, queue, date_str):
         async with db.execute("SELECT off_hours FROM daily_stats WHERE region = ? AND queue = ? AND date = ?", (region, queue, date_str)) as cur:
             row = await cur.fetchone()
             return row[0] if row else None
+
+
+# ========== НОВА СИСТЕМА ПІДТРИМКИ ==========
+
+async def create_or_get_ticket(user_id, username):
+    """Створює новий тікет або повертає існуючий відкритий тікет."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Перевіряємо чи є відкритий тікет
+        async with db.execute(
+            "SELECT ticket_id FROM support_tickets WHERE user_id = ? AND status != 'closed' ORDER BY last_message_at DESC LIMIT 1",
+            (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                return row[0]
+        
+        # Створюємо новий тікет
+        async with db.execute(
+            "INSERT INTO support_tickets (user_id, username, status) VALUES (?, ?, 'unread')",
+            (user_id, username)
+        ) as cur:
+            await db.commit()
+            return cur.lastrowid
+
+async def save_support_message(ticket_id, from_user, message_text):
+    """Зберігає повідомлення в тікет."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO support_messages (ticket_id, from_user, message_text) VALUES (?, ?, ?)",
+            (ticket_id, from_user, message_text)
+        )
+        # Оновлюємо час останнього повідомлення
+        await db.execute(
+            "UPDATE support_tickets SET last_message_at = CURRENT_TIMESTAMP WHERE ticket_id = ?",
+            (ticket_id,)
+        )
+        await db.commit()
+
+async def get_unread_tickets():
+    """Отримує всі непрочитані тікети."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT t.ticket_id, t.user_id, t.username, t.created_at, t.last_message_at,
+                   (SELECT COUNT(*) FROM support_messages WHERE ticket_id = t.ticket_id) as msg_count
+            FROM support_tickets t
+            WHERE t.status = 'unread'
+            ORDER BY t.last_message_at DESC
+        """) as cur:
+            return await cur.fetchall()
+
+async def get_all_tickets():
+    """Отримує всі тікети."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT t.ticket_id, t.user_id, t.username, t.status, t.created_at, t.last_message_at,
+                   (SELECT COUNT(*) FROM support_messages WHERE ticket_id = t.ticket_id) as msg_count
+            FROM support_tickets t
+            ORDER BY t.last_message_at DESC
+            LIMIT 20
+        """) as cur:
+            return await cur.fetchall()
+
+async def get_ticket_messages(ticket_id):
+    """Отримує всі повідомлення тікету."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT from_user, message_text, created_at
+            FROM support_messages
+            WHERE ticket_id = ?
+            ORDER BY created_at ASC
+        """, (ticket_id,)) as cur:
+            return await cur.fetchall()
+
+async def mark_ticket_read(ticket_id):
+    """Позначає тікет як прочитаний."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE support_tickets SET status = 'read' WHERE ticket_id = ?",
+            (ticket_id,)
+        )
+        await db.commit()
+
+async def close_ticket(ticket_id):
+    """Закриває тікет."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE support_tickets SET status = 'closed' WHERE ticket_id = ?",
+            (ticket_id,)
+        )
+        await db.commit()
+
+async def reopen_ticket(ticket_id):
+    """Знову відкриває тікет."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE support_tickets SET status = 'unread', last_message_at = CURRENT_TIMESTAMP WHERE ticket_id = ?",
+            (ticket_id,)
+        )
+        await db.commit()
+
+async def get_ticket_info(ticket_id):
+    """Отримує інформацію про тікет."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT user_id, username, status FROM support_tickets WHERE ticket_id = ?",
+            (ticket_id,)
+        ) as cur:
+            return await cur.fetchone()
+
+async def get_unread_count():
+    """Отримує кількість непрочитаних тікетів."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM support_tickets WHERE status = 'unread'"
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
