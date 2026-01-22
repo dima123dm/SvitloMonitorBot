@@ -86,7 +86,7 @@ async def fetch_hoe_site():
         schedule_map = {}
         current_date_str = None
         
-        # Проходимо по контенту
+        # Проходимо по контенту зверху вниз
         for element in post_div.children:
             text = element.get_text(strip=True) if element.name else ""
             
@@ -141,6 +141,12 @@ def parse_queue_line(text, date_str, schedule_map):
     if queue_id not in schedule_map:
         schedule_map[queue_id] = {}
     
+    # === ВАЖЛИВА ЗМІНА: ЗАХИСТ ВІД ПЕРЕЗАПИСУ ===
+    # Оскільки ми читаємо зверху вниз, перше знайдене - найактуальніше.
+    # Якщо дані для цієї дати вже є - ігноруємо (це старий пост знизу).
+    if date_str in schedule_map[queue_id]:
+        return
+
     # Записуємо інтервали
     schedule_map[queue_id][date_str] = formatted_intervals
 
