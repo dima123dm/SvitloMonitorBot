@@ -114,8 +114,8 @@ async def show_time_type_selection(message: types.Message):
     text = "⏰ **Налаштування часу**\n\nЯкий таймер ви хочете змінити?"
     
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔦 Коли зникає світло", callback_data="time_edit|outage")
-    kb.button(text="💡 Коли з'являється світло", callback_data="time_edit|return")
+    kb.button(text="🔦 Відключення", callback_data="time_edit|outage")
+    kb.button(text="💡 До включення", callback_data="time_edit|return")
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
     
     await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
