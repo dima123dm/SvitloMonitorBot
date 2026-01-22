@@ -21,17 +21,32 @@ async def init_db():
         # Додаємо нові колонки до існуючої таблиці users.
         
         try:
-            # Час попередження (за замовчуванням 5 хв)
+            # Час попередження про ВІДКЛЮЧЕННЯ (стандарт 5 хв)
             await db.execute("ALTER TABLE users ADD COLUMN notify_before INTEGER DEFAULT 5")
         except: pass
+
+        try:
+            # === НОВЕ: Час попередження про ВКЛЮЧЕННЯ (стандарт 0 - ВИМКНЕНО) ===
+            await db.execute("ALTER TABLE users ADD COLUMN notify_return_before INTEGER DEFAULT 0")
+        except: pass
         
+        # === ФІКС ДЛЯ НОВОГО ТАЙМЕРА ===
+        # Якщо ми помилково встановили 5 хвилин у попередній версії коду (до релізу меню),
+        # цей рядок примусово вимкне таймер включення для всіх, щоб не спамити.
+        try:
+            # Перевіряємо, чи є користувачі, у яких стоїть 5 (помилковий дефолт)
+            # ВАЖЛИВО: Це спрацює тільки якщо ми запускаємо це ДО того, як люди почали користуватись меню.
+            await db.execute("UPDATE users SET notify_return_before = 0 WHERE notify_return_before = 5")
+            await db.commit()
+        except: pass
+
         try:
             # Сповіщення про відключення (1 = вкл, 0 = викл)
             await db.execute("ALTER TABLE users ADD COLUMN notify_outage INTEGER DEFAULT 1")
         except: pass
 
         try:
-            # Сповіщення про включення
+            # Сповіщення про включення (рівно в момент події)
             await db.execute("ALTER TABLE users ADD COLUMN notify_return INTEGER DEFAULT 1")
         except: pass
 
@@ -124,38 +139,42 @@ async def get_user_settings(user_id):
     async with aiosqlite.connect(DB_NAME) as db:
         # Якщо користувача немає або поля пусті, повертаємо дефолтні налаштування
         defaults = {
-            "notify_before": 5, # СТАНДАРТ: 5 ХВИЛИН
+            "notify_before": 5, 
+            "notify_return_before": 0, # СТАНДАРТ: 0 (Вимкнено)
             "notify_outage": 1, 
             "notify_return": 1, 
             "notify_changes": 1, 
             "display_mode": "blackout"
         }
         
-        # Пробуємо отримати нові поля. Якщо база стара і міграція не пройшла (малоймовірно),
-        # запит може впасти, тому можна обгорнути в try, але init_db має гарантувати наявність полів.
+        # Пробуємо отримати нові поля.
         try:
+            # Додали notify_return_before у запит
             async with db.execute("""
-                SELECT notify_before, notify_outage, notify_return, notify_changes, display_mode 
+                SELECT notify_before, notify_outage, notify_return, notify_changes, display_mode, notify_return_before 
                 FROM users WHERE user_id = ?
             """, (user_id,)) as cur:
                 row = await cur.fetchone()
                 if row:
-                    # Якщо значення NULL (наприклад, старий юзер), беремо дефолт
                     return {
-                        "notify_before": row[0] if row[0] is not None else 5, # СТАНДАРТ: 5 ХВИЛИН
+                        "notify_before": row[0] if row[0] is not None else 5,
                         "notify_outage": row[1] if row[1] is not None else 1,
                         "notify_return": row[2] if row[2] is not None else 1,
                         "notify_changes": row[3] if row[3] is not None else 1,
-                        "display_mode": row[4] if row[4] is not None else "blackout"
+                        "display_mode": row[4] if row[4] is not None else "blackout",
+                        # Беремо значення з бази або 0, якщо його ще немає
+                        "notify_return_before": row[5] if (len(row) > 5 and row[5] is not None) else 0
                     }
         except Exception as e:
-            print(f"Error getting settings: {e}")
+            # print(f"Error getting settings: {e}")
+            pass
             
         return defaults
 
 async def update_user_setting(user_id, key, value):
     """Оновлює конкретне налаштування."""
-    allowed_keys = ["notify_before", "notify_outage", "notify_return", "notify_changes", "display_mode"]
+    # Додали notify_return_before у список дозволених ключів
+    allowed_keys = ["notify_before", "notify_return_before", "notify_outage", "notify_return", "notify_changes", "display_mode"]
     if key not in allowed_keys:
         return
     

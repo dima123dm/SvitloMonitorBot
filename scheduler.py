@@ -6,9 +6,9 @@ import api_utils as api
 import database as db
 from config import UPDATE_INTERVAL
 
-# Кеш в пам'яті (цей словник ми будемо імпортувати в handlers.py)
+# Кеш в пам'яті
 schedules_cache = {} 
-# Історія сповіщень (тепер з урахуванням часу попередження)
+# Історія сповіщень
 alert_history = set()
 
 async def smart_broadcast(bot, region, queue, text_blackout, text_light, filter_func):
@@ -179,40 +179,50 @@ async def check_alerts(bot):
                 today_intervals = api.parse_intervals(today_sch)
                 tom_intervals = api.parse_intervals(tom_sch) if tom_sch else []
 
-                # --- 1. СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ (PRE-ALERT) ---
                 for start, end in today_intervals:
-                    if start == "00:00": continue
+                    
+                    # === 1. СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ (notify_before) ===
+                    if start != "00:00":
+                        for mins, check_time in check_moments.items():
+                            if check_time == start:
+                                alert_id = f"{key}_{start}_out_pre_{mins}"
+                                if alert_id not in alert_history:
+                                    # Визначаємо кінець
+                                    actual_end = end
+                                    if end == "24:00" and tom_intervals and tom_intervals[0][0] == "00:00":
+                                        actual_end = tom_intervals[0][1]
+                                        actual_end = "завтра до кінця дня" if actual_end == "24:00" else f"завтра до {actual_end}"
+                                    elif end == "24:00":
+                                        actual_end = "кінця дня"
+                                    
+                                    msg = f"⏳ **Скоро відключення (через {mins} хв).**\nСвітла не буде до **{actual_end}**."
+                                    
+                                    # Фільтр: notify_outage=1 ТА notify_before=mins
+                                    await smart_broadcast(
+                                        bot, key[0], key[1], msg, msg,
+                                        lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
+                                    )
+                                    alert_history.add(alert_id)
 
-                    # Перевіряємо всі таймінги (5, 15, 30, 60)
-                    for mins, check_time in check_moments.items():
-                        if check_time == start:
-                            alert_id = f"{key}_{start}_pre_{mins}" # Унікальний ID для кожного таймінгу
-                            
-                            if alert_id not in alert_history:
-                                # Визначаємо кінець відключення
-                                actual_end = end
-                                if end == "24:00" and tom_intervals and tom_intervals[0][0] == "00:00":
-                                    actual_end = tom_intervals[0][1]
-                                    if actual_end == "24:00":
-                                        actual_end = "завтра до кінця дня"
-                                    else:
-                                        actual_end = f"завтра до {actual_end}"
-                                elif end == "24:00":
-                                    actual_end = "кінця дня"
-                                
-                                msg = f"⏳ **Скоро відключення (через {mins} хв).**\nСвітла не буде до **{actual_end}**."
-                                
-                                # Фільтр: вкл сповіщення про відключення + збігається час таймера
-                                await smart_broadcast(
-                                    bot, key[0], key[1], msg, msg,
-                                    lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
-                                )
-                                alert_history.add(alert_id)
-                
+                    # === 2. СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ (notify_return_before) - НОВЕ ===
+                    # Якщо світло має з'явитись (кінець відключення)
+                    if end != "24:00":
+                        for mins, check_time in check_moments.items():
+                            if check_time == end:
+                                alert_id = f"{key}_{end}_ret_pre_{mins}"
+                                if alert_id not in alert_history:
+                                    msg = f"💡 **Світло з'явиться орієнтовно через {mins} хв (о {end}).**"
+                                    
+                                    # Фільтр: notify_return=1 ТА notify_return_before=mins
+                                    await smart_broadcast(
+                                        bot, key[0], key[1], msg, msg,
+                                        lambda s, m=mins: s['notify_return'] == 1 and s['notify_return_before'] == m
+                                    )
+                                    alert_history.add(alert_id)
+
                 # --- Стик днів (23:XX -> 00:00) ---
                 if tom_intervals and tom_intervals[0][0] == "00:00":
                     start_tom, end_tom = tom_intervals[0]
-                    
                     for mins, check_time in check_moments.items():
                         if check_time == "00:00":
                              alert_id = f"{key}_00:00_tom_pre_{mins}"
@@ -226,7 +236,7 @@ async def check_alerts(bot):
                                  )
                                  alert_history.add(alert_id)
 
-                # --- 2. СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ (ON-ALERT) ---
+                # --- 3. СПОВІЩЕННЯ В МОМЕНТ ВКЛЮЧЕННЯ (notify_return) ===
                 for start, end in today_intervals:
                     if curr_time == end and end != "24:00":
                         alert_id = f"{key}_{end}_on"

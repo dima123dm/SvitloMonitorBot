@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta
 import asyncio
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.types import KeyboardButton, InlineKeyboardButton
 
@@ -34,8 +34,15 @@ def get_main_keyboard(user_id=None):
 
 
 @router.message(Command("start"))
-async def start_command(message: types.Message):
+async def start_command(message: types.Message, command: CommandObject):
     """Команда /start."""
+    # Підтримка Deep Linking (якщо перейшли по посиланню налаштувань)
+    if command.args == "settings":
+        user = await db.get_user(message.from_user.id)
+        if user:
+            await show_settings_main(message, message.from_user.id)
+            return
+
     user = await db.get_user(message.from_user.id)
     if user:
         await message.answer(
@@ -67,35 +74,33 @@ async def show_settings_main(message: types.Message, user_id, edit=False):
 
     settings = await db.get_user_settings(user_id)
     
-    # Визначаємо, як зараз виглядає графік для користувача
     if settings['display_mode'] == 'light':
         mode_status = "🟢 Показую, коли світло Є"
     else:
         mode_status = "⬛️ Показую, коли світла НЕМАЄ"
     
+    # Відображаємо статус таймерів у меню (красиво)
+    t_out = f"{settings['notify_before']} хв" if settings['notify_before'] > 0 else "Вимкнено"
+    t_in = f"{settings['notify_return_before']} хв" if settings['notify_return_before'] > 0 else "Вимкнено"
+
     text = (
         f"⚙️ **Головні налаштування**\n"
         f"📍 Локація: **{user[0]}, Черга {user[1]}**\n\n"
-        f"⏰ Сповіщаємо за: **{settings['notify_before']} хв**\n"
+        f"⏰ Таймер відключення: **{t_out}**\n"
+        f"⏰ Таймер включення: **{t_in}**\n"
         f"🎨 Вигляд графіку: **{mode_status}**"
     )
 
     kb = InlineKeyboardBuilder()
     
-    # Кнопки навігації (ієрархія зі стрілочками)
-    kb.button(text="⏰ Час сповіщень >", callback_data="menu_time")
+    # Кнопки навігації (ієрархія)
+    kb.button(text="⏰ Налаштувати таймери >", callback_data="menu_time_select")
     kb.button(text="🔔 Налаштування сповіщень >", callback_data="menu_types")
-    
-    # Тепер це теж підменю
     kb.button(text="🎨 Вигляд графіку >", callback_data="menu_mode")
-    
-    # Зміна локації теж веде далі
     kb.button(text="📍 Змінити область/чергу >", callback_data="open_regions")
-    
-    # Закрити
     kb.button(text="❌ Закрити меню", callback_data="close_settings")
 
-    kb.adjust(1) # Всі кнопки в один стовпчик
+    kb.adjust(1) 
 
     if edit:
         await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
@@ -103,38 +108,63 @@ async def show_settings_main(message: types.Message, user_id, edit=False):
         await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
 
-# --- 2. ПІДМЕНЮ: ЧАС СПОВІЩЕНЬ ---
-async def show_time_menu(message: types.Message, user_id):
-    settings = await db.get_user_settings(user_id)
-    current = settings['notify_before']
+# --- 2. ПІДМЕНЮ: ВИБІР ТАЙМЕРА (НОВЕ) ---
+async def show_time_type_selection(message: types.Message):
+    """Меню вибору: який таймер налаштовуємо?"""
+    text = "⏰ **Налаштування часу**\n\nЯкий таймер ви хочете змінити?"
     
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔦 Коли зникає світло", callback_data="time_edit|outage")
+    kb.button(text="💡 Коли з'являється світло", callback_data="time_edit|return")
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
+    
+    await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+
+# --- 3. ПІДМЕНЮ: ВИБІР ХВИЛИН ---
+async def show_minutes_menu(message: types.Message, user_id, timer_type):
+    """Меню вибору хвилин для конкретного таймера."""
+    settings = await db.get_user_settings(user_id)
+    
+    # Визначаємо, яку колонку редагуємо і який заголовок
+    if timer_type == "outage":
+        current = settings['notify_before']
+        title = "🔦 **Попередження про ВІДКЛЮЧЕННЯ**"
+    else:
+        current = settings['notify_return_before']
+        title = "💡 **Попередження про ВКЛЮЧЕННЯ**"
+
     text = (
-        f"⏰ **Час сповіщення**\n\n"
-        f"За скільки хвилин до відключення вам надсилати повідомлення?"
+        f"{title}\n\n"
+        f"За скільки хвилин вас попередити?"
     )
     
     kb = InlineKeyboardBuilder()
     times = [5, 15, 30, 60]
     
     for t in times:
-        # Ставимо галочку біля обраного
         mark = "✅" if current == t else ""
         label = "1 год" if t == 60 else f"{t} хв"
-        kb.button(text=f"{mark} {label}", callback_data=f"set_time|{t}")
+        # Передаємо тип таймера далі в callback
+        kb.button(text=f"{mark} {label}", callback_data=f"set_time|{timer_type}|{t}")
     
-    kb.adjust(2) # По 2 кнопки в ряд
-    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
+    # Кнопка вимкнення (встановлює 0)
+    mark_off = "✅" if current == 0 else ""
+    kb.row(InlineKeyboardButton(text=f"{mark_off} 🔕 Не нагадувати", callback_data=f"set_time|{timer_type}|0"))
+    
+    kb.adjust(2, 2, 1) 
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_time_select"))
     
     await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
 
-# --- 3. ПІДМЕНЮ: ТИПИ СПОВІЩЕНЬ ---
+# --- 4. ПІДМЕНЮ: ТИПИ СПОВІЩЕНЬ ---
 async def show_types_menu(message: types.Message, user_id):
     settings = await db.get_user_settings(user_id)
     
     text = (
         f"🔔 **Налаштування сповіщень**\n\n"
-        f"Увімкніть або вимкніть повідомлення, які ви хочете отримувати:"
+        f"Увімкніть або вимкніть повідомлення:"
     )
     
     kb = InlineKeyboardBuilder()
@@ -157,25 +187,23 @@ async def show_types_menu(message: types.Message, user_id):
     await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
 
-# --- 4. ПІДМЕНЮ: ВИГЛЯД ГРАФІКУ ---
+# --- 5. ПІДМЕНЮ: ВИГЛЯД ГРАФІКУ ---
 async def show_mode_menu(message: types.Message, user_id):
     settings = await db.get_user_settings(user_id)
     current = settings['display_mode']
     
     text = (
         f"🎨 **Вигляд графіку**\n\n"
-        f"Оберіть, як бот має показувати інформацію:"
+        f"Що показувати на картинці?"
     )
     
     kb = InlineKeyboardBuilder()
     
-    # Варіант 1: Blackout
     mark_b = "✅" if current == "blackout" else ""
-    kb.button(text=f"{mark_b} ⬛️ Показувати графік відключень", callback_data="set_mode|blackout")
+    kb.button(text=f"{mark_b} ⬛️ Коли світла НЕМАЄ", callback_data="set_mode|blackout")
     
-    # Варіант 2: Light
     mark_l = "✅" if current == "light" else ""
-    kb.button(text=f"{mark_l} 💡 Показувати графік наявності світла", callback_data="set_mode|light")
+    kb.button(text=f"{mark_l} 🟢 Коли світло Є", callback_data="set_mode|light")
     
     kb.adjust(1)
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
@@ -187,34 +215,44 @@ async def show_mode_menu(message: types.Message, user_id):
 
 @router.callback_query(F.data == "menu_main")
 async def nav_main(callback: types.CallbackQuery):
-    """Повертає в головне меню налаштувань."""
     await show_settings_main(callback.message, callback.from_user.id, edit=True)
 
-@router.callback_query(F.data == "menu_time")
-async def nav_time(callback: types.CallbackQuery):
-    """Переходить в меню часу."""
-    await show_time_menu(callback.message, callback.from_user.id)
+@router.callback_query(F.data == "menu_time_select")
+async def nav_time_select(callback: types.CallbackQuery):
+    """Показує вибір типу таймера."""
+    await show_time_type_selection(callback.message)
+
+@router.callback_query(F.data.startswith("time_edit|"))
+async def nav_time_edit(callback: types.CallbackQuery):
+    """Показує вибір хвилин для конкретного типу."""
+    timer_type = callback.data.split("|")[1] # outage або return
+    await show_minutes_menu(callback.message, callback.from_user.id, timer_type)
 
 @router.callback_query(F.data == "menu_types")
 async def nav_types(callback: types.CallbackQuery):
-    """Переходить в меню типів."""
     await show_types_menu(callback.message, callback.from_user.id)
 
 @router.callback_query(F.data == "menu_mode")
 async def nav_mode(callback: types.CallbackQuery):
-    """Переходить в меню вигляду графіку."""
     await show_mode_menu(callback.message, callback.from_user.id)
 
 @router.callback_query(F.data.startswith("set_time|"))
 async def set_notify_time(callback: types.CallbackQuery):
-    """Встановлює час і оновлює меню часу."""
-    minutes = int(callback.data.split("|")[1])
-    await db.update_user_setting(callback.from_user.id, "notify_before", minutes)
-    await show_time_menu(callback.message, callback.from_user.id)
+    """Встановлює час (універсальна функція)."""
+    parts = callback.data.split("|")
+    timer_type = parts[1] # outage або return
+    minutes = int(parts[2])
+    
+    # Визначаємо, в яку колонку писати
+    col_name = "notify_before" if timer_type == "outage" else "notify_return_before"
+    
+    await db.update_user_setting(callback.from_user.id, col_name, minutes)
+    
+    # Оновлюємо це ж меню, щоб показати нову галочку
+    await show_minutes_menu(callback.message, callback.from_user.id, timer_type)
 
 @router.callback_query(F.data.startswith("toggle|"))
 async def toggle_setting(callback: types.CallbackQuery):
-    """Перемикає галочку і оновлює меню типів."""
     key = callback.data.split("|")[1]
     settings = await db.get_user_settings(callback.from_user.id)
     new_val = 0 if settings[key] else 1
@@ -223,20 +261,17 @@ async def toggle_setting(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("set_mode|"))
 async def set_display_mode(callback: types.CallbackQuery):
-    """Встановлює режим графіку і оновлює меню вигляду."""
     new_mode = callback.data.split("|")[1]
     await db.update_user_setting(callback.from_user.id, "display_mode", new_mode)
     await show_mode_menu(callback.message, callback.from_user.id)
 
 @router.callback_query(F.data == "open_regions")
 async def open_regions_handler(callback: types.CallbackQuery):
-    """Відкриває вибір регіону."""
     await callback.message.delete()
     await show_regions_menu(callback.message, "👇 **Оберіть вашу область:**")
 
 @router.callback_query(F.data == "close_settings")
 async def close_settings_handler(callback: types.CallbackQuery):
-    """Закриває меню."""
     await callback.message.delete()
 
 
@@ -289,27 +324,23 @@ async def select_queue(callback: types.CallbackQuery):
     await asyncio.sleep(0.5) 
     await callback.message.answer(
         "💡 **Маленька порада!**\n\n"
-        "Ви можете налаштувати бота під себе:\n"
+        "У меню **⚙️ Налаштування** ви можете:\n"
         "⏰ Змінити час сповіщення\n"
-        "🎨 Змінити режим відображення графіку\n"
-        "🔔 Вимкнути зайві сповіщення\n\n"
-        "👉 Тисніть кнопку **⚙️ Налаштування** в меню.",
+        "🎨 Вибрати «зелений» графік (коли світло є)\n"
+        "🔔 Налаштувати повідомлення під себе",
         parse_mode="Markdown"
     )
 
 
 async def show_today_schedule(message, region, queue, user_id=None):
-    # Якщо user_id не передали, беремо з повідомлення
     uid = user_id if user_id else message.from_user.id
     
     today = get_local_now().strftime('%Y-%m-%d')
     schedule = None
     
-    # Отримуємо налаштування для правильного відображення (чорний/світлий графік)
     settings = await db.get_user_settings(uid)
     display_mode = settings.get('display_mode', 'blackout')
 
-    # --- ОПТИМІЗАЦІЯ (SMART CACHE) ---
     cached_data = scheduler.schedules_cache.get((region, queue))
     
     if cached_data is not None:
@@ -325,7 +356,6 @@ async def show_today_schedule(message, region, queue, user_id=None):
     if schedule:
         await db.save_stats(region, queue, today, api.calculate_off_hours(schedule))
     
-    # Передаємо display_mode у функцію форматування
     text = api.format_message(schedule, queue, today, is_tomorrow=False, display_mode=display_mode)
     await message.answer(text, parse_mode="Markdown")
 
