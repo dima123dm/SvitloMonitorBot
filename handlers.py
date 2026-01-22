@@ -52,6 +52,113 @@ async def start_command(message: types.Message):
     await show_regions_menu(message, text)
 
 
+# ==========================================
+# === НОВЕ МЕНЮ НАЛАШТУВАНЬ (SETTINGS) ===
+# ==========================================
+
+async def show_settings_menu(message: types.Message, user_id, edit=False):
+    """Показує головне меню налаштувань."""
+    user = await db.get_user(user_id)
+    if not user:
+        if edit:
+            await message.edit_text("⚠️ Спочатку оберіть регіон через /start")
+        else:
+            await message.answer("⚠️ Спочатку оберіть регіон через /start")
+        return
+
+    settings = await db.get_user_settings(user_id)
+    
+    # Текст меню
+    text = (
+        f"⚙️ **Ваші налаштування**\n"
+        f"📍 **Локація:** {user[0]}, Черга {user[1]}\n\n"
+        f"⏰ **Сповіщати за:** {settings['notify_before']} хв.\n"
+    )
+
+    kb = InlineKeyboardBuilder()
+
+    # 1. Час сповіщення (Radio buttons)
+    times = [5, 15, 30, 60]
+    for t in times:
+        mark = "✅" if settings['notify_before'] == t else ""
+        label = "1 год" if t == 60 else f"{t} хв"
+        kb.button(text=f"{mark} {label}", callback_data=f"set_time|{t}")
+    kb.adjust(4) # 4 кнопки в ряд
+
+    # 2. Типи сповіщень (Toggles)
+    # Відключення
+    icon_out = "✅" if settings['notify_outage'] else "❌"
+    kb.button(text=f"{icon_out} Про відключення", callback_data="toggle|notify_outage")
+    
+    # Включення
+    icon_ret = "✅" if settings['notify_return'] else "❌"
+    kb.button(text=f"{icon_ret} Про включення", callback_data="toggle|notify_return")
+    
+    # Зміни
+    icon_chg = "✅" if settings['notify_changes'] else "❌"
+    kb.button(text=f"{icon_chg} Про зміни графіку", callback_data="toggle|notify_changes")
+    
+    kb.adjust(4, 2, 1) # Попередній ряд (4), цей (2 і 1)
+
+    # 3. Режим відображення
+    if settings['display_mode'] == 'light':
+        mode_text = "💡 Показувати, коли світло Є"
+    else:
+        mode_text = "⬛️ Показувати, коли світла НЕМАЄ"
+    kb.button(text=mode_text, callback_data="switch_mode")
+
+    # 4. Зміна регіону
+    kb.button(text="📍 Змінити область/чергу", callback_data="open_regions")
+    
+    # 5. Закрити (для краси)
+    kb.button(text="Приховати меню 🔼", callback_data="close_settings")
+
+    kb.adjust(4, 2, 1, 1, 1, 1)
+
+    if edit:
+        await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+    else:
+        await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+# --- ОБРОБНИКИ КНОПОК НАЛАШТУВАНЬ ---
+
+@router.callback_query(F.data.startswith("set_time|"))
+async def set_notify_time(callback: types.CallbackQuery):
+    minutes = int(callback.data.split("|")[1])
+    await db.update_user_setting(callback.from_user.id, "notify_before", minutes)
+    await show_settings_menu(callback.message, callback.from_user.id, edit=True)
+
+@router.callback_query(F.data.startswith("toggle|"))
+async def toggle_setting(callback: types.CallbackQuery):
+    key = callback.data.split("|")[1]
+    settings = await db.get_user_settings(callback.from_user.id)
+    
+    # Інвертуємо значення (1 -> 0, 0 -> 1)
+    new_val = 0 if settings[key] else 1
+    await db.update_user_setting(callback.from_user.id, key, new_val)
+    await show_settings_menu(callback.message, callback.from_user.id, edit=True)
+
+@router.callback_query(F.data == "switch_mode")
+async def switch_display_mode(callback: types.CallbackQuery):
+    settings = await db.get_user_settings(callback.from_user.id)
+    new_mode = "blackout" if settings['display_mode'] == "light" else "light"
+    await db.update_user_setting(callback.from_user.id, "display_mode", new_mode)
+    await show_settings_menu(callback.message, callback.from_user.id, edit=True)
+
+@router.callback_query(F.data == "open_regions")
+async def open_regions_handler(callback: types.CallbackQuery):
+    await callback.message.delete()
+    await show_regions_menu(callback.message, "👇 **Оберіть вашу область:**")
+
+@router.callback_query(F.data == "close_settings")
+async def close_settings_handler(callback: types.CallbackQuery):
+    await callback.message.delete()
+
+
+# ==========================================
+# === ЛОГІКА ВИБОРУ РЕГІОНУ (СТАРА) ===
+# ==========================================
+
 async def show_regions_menu(message: types.Message, text):
     data = await api.fetch_api_data()
     if not data:
@@ -89,13 +196,20 @@ async def select_queue(callback: types.CallbackQuery):
         f"✅ Налаштування збережено!\n📍 {region}, Черга {queue}", 
         reply_markup=get_main_keyboard(callback.from_user.id)
     )
-    await show_today_schedule(callback.message, region, queue)
+    await show_today_schedule(callback.message, region, queue, user_id=callback.from_user.id)
 
 
-async def show_today_schedule(message, region, queue):
+async def show_today_schedule(message, region, queue, user_id=None):
+    # Якщо user_id не передали, беремо з повідомлення
+    uid = user_id if user_id else message.from_user.id
+    
     today = get_local_now().strftime('%Y-%m-%d')
     schedule = None
     
+    # Отримуємо налаштування для правильного відображення (чорний/світлий графік)
+    settings = await db.get_user_settings(uid)
+    display_mode = settings.get('display_mode', 'blackout')
+
     # --- ОПТИМІЗАЦІЯ (SMART CACHE) ---
     cached_data = scheduler.schedules_cache.get((region, queue))
     
@@ -111,7 +225,9 @@ async def show_today_schedule(message, region, queue):
     
     if schedule:
         await db.save_stats(region, queue, today, api.calculate_off_hours(schedule))
-    text = api.format_message(schedule, queue, today, is_tomorrow=False)
+    
+    # Передаємо display_mode у функцію форматування
+    text = api.format_message(schedule, queue, today, is_tomorrow=False, display_mode=display_mode)
     await message.answer(text, parse_mode="Markdown")
 
 
@@ -119,20 +235,26 @@ async def show_today_schedule(message, region, queue):
 
 @router.message(F.text == "⚙️ Налаштування")
 async def btn_settings(message: types.Message):
-    await show_regions_menu(message, "⚙️ **Налаштування**\nОберіть область:")
+    # ТЕПЕР ВІДКРИВАЄ НОВЕ МЕНЮ
+    await show_settings_menu(message, message.from_user.id)
 
 @router.message(F.text == "📅 Графік на сьогодні")
 async def btn_today(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: 
         return await message.answer("Спочатку зробіть налаштування.")
-    await show_today_schedule(message, user[0], user[1])
+    await show_today_schedule(message, user[0], user[1], user_id=message.from_user.id)
 
 @router.message(F.text == "🔮 Графік на завтра")
 async def btn_tomorrow(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: 
         return await message.answer("Спочатку налаштування.")
+    
+    # Отримуємо налаштування
+    settings = await db.get_user_settings(message.from_user.id)
+    display_mode = settings.get('display_mode', 'blackout')
+
     tomorrow = (get_local_now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
     schedule = None
@@ -151,7 +273,9 @@ async def btn_tomorrow(message: types.Message):
                     
     if schedule:
         await db.save_stats(user[0], user[1], tomorrow, api.calculate_off_hours(schedule))
-    text = api.format_message(schedule, user[1], tomorrow, is_tomorrow=True)
+    
+    # Передаємо display_mode
+    text = api.format_message(schedule, user[1], tomorrow, is_tomorrow=True, display_mode=display_mode)
     await message.answer(text, parse_mode="Markdown")
 
 @router.message(F.text == "📊 Аналітика")
@@ -515,7 +639,6 @@ async def handle_text_messages(message: types.Message):
             display_text = message.text[:500] + "..." if len(message.text) > 500 else message.text
             
             # === ФІКС: ПРИБРАНО parse_mode ДЛЯ АДМІНА ===
-            # Це гарантує доставку повідомлення, навіть якщо нікнейм містить '_'
             await message.bot.send_message(
                 ADMIN_ID,
                 f"🔔 Нове повідомлення в тікеті #{ticket_id}\n"

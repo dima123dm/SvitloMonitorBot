@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from config import DB_NAME
 
 async def init_db():
-    """Створює таблиці та безпечно оновлює структуру підтримки."""
+    """Створює таблиці та безпечно оновлює структуру."""
     async with aiosqlite.connect(DB_NAME) as db:
         # === 1. ОСНОВНІ ДАНІ (НЕ ЧІПАЄМО) ===
         # Таблиця для користувачів
@@ -16,6 +16,37 @@ async def init_db():
                 mode TEXT DEFAULT 'normal'
             )
         """)
+
+        # === МІГРАЦІЯ: ДОДАВАННЯ НАЛАШТУВАНЬ (Personalization 2.0) ===
+        # Додаємо нові колонки до існуючої таблиці users.
+        # Використовуємо try-except, щоб не було помилки, якщо колонки вже існують.
+        
+        try:
+            # Час попередження (за замовчуванням 15 хв)
+            await db.execute("ALTER TABLE users ADD COLUMN notify_before INTEGER DEFAULT 15")
+        except: pass
+        
+        try:
+            # Сповіщення про відключення (1 = вкл, 0 = викл)
+            await db.execute("ALTER TABLE users ADD COLUMN notify_outage INTEGER DEFAULT 1")
+        except: pass
+
+        try:
+            # Сповіщення про включення
+            await db.execute("ALTER TABLE users ADD COLUMN notify_return INTEGER DEFAULT 1")
+        except: pass
+
+        try:
+            # Сповіщення про зміни графіку
+            await db.execute("ALTER TABLE users ADD COLUMN notify_changes INTEGER DEFAULT 1")
+        except: pass
+
+        try:
+            # Режим відображення ('blackout' - відключення, 'light' - світло)
+            await db.execute("ALTER TABLE users ADD COLUMN display_mode TEXT DEFAULT 'blackout'")
+        except: pass
+
+
         # Таблиця для статистики
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
@@ -86,6 +117,54 @@ async def get_user(user_id):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT region, queue FROM users WHERE user_id = ?", (user_id,)) as cur:
             return await cur.fetchone()
+
+# --- НОВІ ФУНКЦІЇ ДЛЯ НАЛАШТУВАНЬ ---
+
+async def get_user_settings(user_id):
+    """Отримує всі налаштування користувача."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Якщо користувача немає або поля пусті, повертаємо дефолтні налаштування
+        defaults = {
+            "notify_before": 15, 
+            "notify_outage": 1, 
+            "notify_return": 1, 
+            "notify_changes": 1, 
+            "display_mode": "blackout"
+        }
+        
+        # Пробуємо отримати нові поля. Якщо база стара і міграція не пройшла (малоймовірно),
+        # запит може впасти, тому можна обгорнути в try, але init_db має гарантувати наявність полів.
+        try:
+            async with db.execute("""
+                SELECT notify_before, notify_outage, notify_return, notify_changes, display_mode 
+                FROM users WHERE user_id = ?
+            """, (user_id,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    # Якщо значення NULL (наприклад, старий юзер), беремо дефолт
+                    return {
+                        "notify_before": row[0] if row[0] is not None else 15,
+                        "notify_outage": row[1] if row[1] is not None else 1,
+                        "notify_return": row[2] if row[2] is not None else 1,
+                        "notify_changes": row[3] if row[3] is not None else 1,
+                        "display_mode": row[4] if row[4] is not None else "blackout"
+                    }
+        except Exception as e:
+            print(f"Error getting settings: {e}")
+            
+        return defaults
+
+async def update_user_setting(user_id, key, value):
+    """Оновлює конкретне налаштування."""
+    allowed_keys = ["notify_before", "notify_outage", "notify_return", "notify_changes", "display_mode"]
+    if key not in allowed_keys:
+        return
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(f"UPDATE users SET {key} = ? WHERE user_id = ?", (value, user_id))
+        await db.commit()
+
+# --- КІНЕЦЬ НОВИХ ФУНКЦІЙ ---
 
 async def save_stats(region, queue, date_str, off_hours):
     """Записує статистику за день."""
