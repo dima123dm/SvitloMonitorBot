@@ -69,9 +69,9 @@ async def show_settings_main(message: types.Message, user_id, edit=False):
     
     # Визначаємо, як зараз виглядає графік для користувача
     if settings['display_mode'] == 'light':
-        mode_status = "🟢 Показує, коли світло Є"
+        mode_status = "🟢 Показую, коли світло Є"
     else:
-        mode_status = "⬛️ Показує, коли світла НЕМАЄ"
+        mode_status = "⬛️ Показую, коли світла НЕМАЄ"
     
     text = (
         f"⚙️ **Головні налаштування**\n"
@@ -82,20 +82,20 @@ async def show_settings_main(message: types.Message, user_id, edit=False):
 
     kb = InlineKeyboardBuilder()
     
-    # Кнопки навігації (ієрархія)
+    # Кнопки навігації (ієрархія зі стрілочками)
     kb.button(text="⏰ Час сповіщень >", callback_data="menu_time")
-    kb.button(text="🔔 Налаштування сповіщень >", callback_data="menu_types")
+    kb.button(text="🔔 Типи сповіщень >", callback_data="menu_types")
     
-    # Пряма дія: зміна режиму
-    kb.button(text="🔄 Змінити вигляд графіку", callback_data="switch_mode_main")
+    # Тепер це теж підменю
+    kb.button(text="🎨 Вигляд графіку >", callback_data="menu_mode")
     
-    # Пряма дія: зміна локації
-    kb.button(text="📍 Змінити область/чергу", callback_data="open_regions")
+    # Зміна локації теж веде далі
+    kb.button(text="📍 Змінити область/чергу >", callback_data="open_regions")
     
     # Закрити
     kb.button(text="❌ Закрити меню", callback_data="close_settings")
 
-    kb.adjust(1) # Всі кнопки в один стовпчик (красиво і зрозуміло)
+    kb.adjust(1) # Всі кнопки в один стовпчик
 
     if edit:
         await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
@@ -139,8 +139,6 @@ async def show_types_menu(message: types.Message, user_id):
     
     kb = InlineKeyboardBuilder()
     
-    # Прості і зрозумілі назви кнопок
-    
     # 1. Відключення
     icon_out = "✅" if settings['notify_outage'] else "❌"
     kb.button(text=f"{icon_out} Коли зникає світло", callback_data="toggle|notify_outage")
@@ -153,7 +151,33 @@ async def show_types_menu(message: types.Message, user_id):
     icon_chg = "✅" if settings['notify_changes'] else "❌"
     kb.button(text=f"{icon_chg} Якщо змінився графік", callback_data="toggle|notify_changes")
     
-    kb.adjust(1) # В стовпчик
+    kb.adjust(1) 
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
+    
+    await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+
+# --- 4. ПІДМЕНЮ: ВИГЛЯД ГРАФІКУ ---
+async def show_mode_menu(message: types.Message, user_id):
+    settings = await db.get_user_settings(user_id)
+    current = settings['display_mode']
+    
+    text = (
+        f"🎨 **Вигляд графіку**\n\n"
+        f"Оберіть, як бот має показувати інформацію:"
+    )
+    
+    kb = InlineKeyboardBuilder()
+    
+    # Варіант 1: Blackout
+    mark_b = "✅" if current == "blackout" else ""
+    kb.button(text=f"{mark_b} ⬛️ Показувати відключення", callback_data="set_mode|blackout")
+    
+    # Варіант 2: Light
+    mark_l = "✅" if current == "light" else ""
+    kb.button(text=f"{mark_l} 💡 Показувати світло", callback_data="set_mode|light")
+    
+    kb.adjust(1)
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
     
     await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
@@ -176,6 +200,11 @@ async def nav_types(callback: types.CallbackQuery):
     """Переходить в меню типів."""
     await show_types_menu(callback.message, callback.from_user.id)
 
+@router.callback_query(F.data == "menu_mode")
+async def nav_mode(callback: types.CallbackQuery):
+    """Переходить в меню вигляду графіку."""
+    await show_mode_menu(callback.message, callback.from_user.id)
+
 @router.callback_query(F.data.startswith("set_time|"))
 async def set_notify_time(callback: types.CallbackQuery):
     """Встановлює час і оновлює меню часу."""
@@ -192,13 +221,12 @@ async def toggle_setting(callback: types.CallbackQuery):
     await db.update_user_setting(callback.from_user.id, key, new_val)
     await show_types_menu(callback.message, callback.from_user.id)
 
-@router.callback_query(F.data == "switch_mode_main")
-async def switch_display_mode_main(callback: types.CallbackQuery):
-    """Перемикає режим графіку і оновлює головне меню."""
-    settings = await db.get_user_settings(callback.from_user.id)
-    new_mode = "blackout" if settings['display_mode'] == "light" else "light"
+@router.callback_query(F.data.startswith("set_mode|"))
+async def set_display_mode(callback: types.CallbackQuery):
+    """Встановлює режим графіку і оновлює меню вигляду."""
+    new_mode = callback.data.split("|")[1]
     await db.update_user_setting(callback.from_user.id, "display_mode", new_mode)
-    await show_settings_main(callback.message, callback.from_user.id, edit=True)
+    await show_mode_menu(callback.message, callback.from_user.id)
 
 @router.callback_query(F.data == "open_regions")
 async def open_regions_handler(callback: types.CallbackQuery):
@@ -374,8 +402,9 @@ async def btn_stats(message: types.Message):
 
     total_str = f"{int(total)}" if total == int(total) else f"{total:.1f}"
 
+    # ЗМІНЕНО ЗАГОЛОВОК
     text = (
-        f"📊 **Статистика (останні 7 днів)**\n"
+        f"📊 **Статистика відключень (останні 7 днів)**\n"
         f"📍 {user[0]}, Черга {user[1]}\n\n" +
         "\n".join(lines) +
         f"\n──────────────────\n"
