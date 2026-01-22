@@ -171,11 +171,11 @@ async def show_mode_menu(message: types.Message, user_id):
     
     # Варіант 1: Blackout
     mark_b = "✅" if current == "blackout" else ""
-    kb.button(text=f"{mark_b} ⬛️ Показувати відключення", callback_data="set_mode|blackout")
+    kb.button(text=f"{mark_b} ⬛️ Показувати графік відключень", callback_data="set_mode|blackout")
     
     # Варіант 2: Light
     mark_l = "✅" if current == "light" else ""
-    kb.button(text=f"{mark_l} 💡 Показувати світло", callback_data="set_mode|light")
+    kb.button(text=f"{mark_l} 💡 Показувати графік наявності світла", callback_data="set_mode|light")
     
     kb.adjust(1)
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
