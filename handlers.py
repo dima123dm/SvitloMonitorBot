@@ -38,20 +38,36 @@ async def start_command(message: types.Message, command: CommandObject):
     """Команда /start."""
     # Підтримка Deep Linking (якщо перейшли по посиланню налаштувань)
     if command.args == "settings":
+        # Перевіряємо, чи є користувач в базі взагалі
         user = await db.get_user(message.from_user.id)
         if user:
-            await show_settings_main(message, message.from_user.id)
+            await show_settings_main(message, message.from_user.id, message.chat.id)
             return
 
+    # Перевіряємо, чи знаємо ми цього юзера глобально
     user = await db.get_user(message.from_user.id)
+    
     if user:
+        # Текст вітання залежить від того, де ми (група чи особисті)
+        if message.chat.type in ['group', 'supergroup']:
+            welcome_text = (
+                f"👋 **Привіт, {message.from_user.first_name}!**\n"
+                f"Я бачу твої налаштування: **{user[0]}, Черга {user[1]}**.\n\n"
+                f"💡 Ти можеш налаштувати **окремі сповіщення** для цієї групи (таймери, режим), натиснувши кнопку **⚙️ Налаштування**."
+            )
+        else:
+            welcome_text = f"👋 **Ласкаво просимо назад!**\n📍 Ваш вибір: **{user[0]}, Черга {user[1]}**"
+            
         await message.answer(
-            f"👋 **Ласкаво просимо назад!**\n📍 Ваш вибір: **{user[0]}, Черга {user[1]}**",
+            welcome_text,
             reply_markup=get_main_keyboard(message.from_user.id),
             parse_mode="Markdown"
         )
         return
     
+    # Якщо юзера немає в базі, показуємо кнопки меню, щоб він не губився
+    await message.answer("👇 **Меню завантажено.**", reply_markup=get_main_keyboard(message.from_user.id))
+
     text = (
         "👋 **Вітаю! Це бот Моніторингу Світла.**\n"
         "👇 **Оберіть вашу область:**"
@@ -59,41 +75,94 @@ async def start_command(message: types.Message, command: CommandObject):
     await show_regions_menu(message, text)
 
 
+# === НОВА КОМАНДА /grafik ===
+@router.message(Command("grafik"))
+async def grafik_command(message: types.Message):
+    """Швидка команда для показу графіку (зручно в групах)."""
+    user = await db.get_user(message.from_user.id)
+    
+    # Якщо юзер не налаштований
+    if not user:
+        if message.chat.type in ['group', 'supergroup']:
+             kb = InlineKeyboardBuilder()
+             try:
+                 bot_username = (await message.bot.me()).username
+                 kb.button(text="🤖 Налаштувати", url=f"https://t.me/{bot_username}?start")
+             except: pass
+             await message.answer("⚠️ Я не знаю вашого регіону. Натисніть кнопку, щоб налаштувати:", reply_markup=kb.as_markup())
+        else:
+             await message.answer("Спочатку зробіть налаштування через /start.")
+        return
+
+    # Викликаємо показ графіку
+    await show_today_schedule(message, user[0], user[1], user_id=message.from_user.id)
+
+
 # ==========================================
 # === НОВЕ ЗРУЧНЕ МЕНЮ НАЛАШТУВАНЬ ===
 # ==========================================
 
 # --- 1. ГОЛОВНЕ МЕНЮ НАЛАШТУВАНЬ ---
-async def show_settings_main(message: types.Message, user_id, edit=False):
+async def show_settings_main(message: types.Message, user_id, chat_id, edit=False):
     """Головна сторінка налаштувань."""
+    
+    # Регіон і черга беруться ГЛОБАЛЬНО (з таблиці users)
     user = await db.get_user(user_id)
+    
+    # Якщо користувача немає в базі - просимо налаштувати
     if not user:
-        if edit: await message.edit_text("⚠️ Спочатку оберіть регіон через /start")
-        else: await message.answer("⚠️ Спочатку оберіть регіон через /start")
+        warning_text = (
+            "⚠️ **Я вас ще не знаю.**\n\n"
+            "Щоб налаштувати бота, натисніть кнопку нижче і запустіть мене в особистих повідомленнях."
+        )
+        # Додаємо кнопку для швидкого переходу
+        kb = InlineKeyboardBuilder()
+        try:
+            bot_username = (await message.bot.me()).username
+            kb.button(text="🤖 Запустити бота", url=f"https://t.me/{bot_username}?start")
+        except: pass
+            
+        if edit: 
+            await message.edit_text(warning_text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+        else: 
+            await message.answer(warning_text, reply_markup=kb.as_markup(), parse_mode="Markdown")
         return
 
-    settings = await db.get_user_settings(user_id)
+    # Налаштування сповіщень беруться ЛОКАЛЬНО (для цього чату + цього юзера)
+    # Функція get_chat_user_settings сама вирішить: брати особисті чи групові
+    settings = await db.get_chat_user_settings(chat_id, user_id)
     
     if settings['display_mode'] == 'light':
         mode_status = "🟢 Показую, коли світло Є"
     else:
         mode_status = "⬛️ Показую, коли світла НЕМАЄ"
     
-    # Відображаємо статус таймерів у меню (красиво)
+    # Відображаємо статус таймерів у меню
     t_out = f"{settings['notify_before']} хв" if settings['notify_before'] > 0 else "Вимкнено"
     t_in = f"{settings['notify_return_before']} хв" if settings['notify_return_before'] > 0 else "Вимкнено"
 
+    # Заголовок залежить від контексту
+    if message.chat.type in ['group', 'supergroup']:
+        title = f"⚙️ **Налаштування для ЦЬОГО чату**"
+        subtitle = f"📍 Ваша локація: **{user[0]}, {user[1]}** (Глобально)"
+        note = "\nℹ️ *Ці налаштування (таймери, режим) діють тільки в цій групі.*"
+    else:
+        title = f"⚙️ **Особисті налаштування**"
+        subtitle = f"📍 Локація: **{user[0]}, Черга {user[1]}**"
+        note = ""
+
     text = (
-        f"⚙️ **Головні налаштування**\n"
-        f"📍 Локація: **{user[0]}, Черга {user[1]}**\n\n"
+        f"{title}\n"
+        f"{subtitle}\n\n"
         f"⏰ Таймер відключення: **{t_out}**\n"
         f"⏰ Таймер включення: **{t_in}**\n"
         f"🎨 Вигляд графіку: **{mode_status}**"
+        f"{note}"
     )
 
     kb = InlineKeyboardBuilder()
     
-    # Кнопки навігації (ієрархія)
+    # Кнопки навігації
     kb.button(text="⏰ Налаштувати таймери >", callback_data="menu_time_select")
     kb.button(text="🔔 Налаштування сповіщень >", callback_data="menu_types")
     kb.button(text="🎨 Вигляд графіку >", callback_data="menu_mode")
@@ -122,9 +191,10 @@ async def show_time_type_selection(message: types.Message):
 
 
 # --- 3. ПІДМЕНЮ: ВИБІР ХВИЛИН ---
-async def show_minutes_menu(message: types.Message, user_id, timer_type):
+async def show_minutes_menu(message: types.Message, user_id, chat_id, timer_type):
     """Меню вибору хвилин для конкретного таймера."""
-    settings = await db.get_user_settings(user_id)
+    
+    settings = await db.get_chat_user_settings(chat_id, user_id)
     
     # Визначаємо, яку колонку редагуємо і який заголовок
     if timer_type == "outage":
@@ -148,7 +218,7 @@ async def show_minutes_menu(message: types.Message, user_id, timer_type):
         # Передаємо тип таймера далі в callback
         kb.button(text=f"{mark} {label}", callback_data=f"set_time|{timer_type}|{t}")
     
-    # Кнопка вимкнення (встановлює 0)
+    # Кнопка вимкнення
     mark_off = "✅" if current == 0 else ""
     kb.row(InlineKeyboardButton(text=f"{mark_off} 🔕 Не нагадувати", callback_data=f"set_time|{timer_type}|0"))
     
@@ -159,8 +229,9 @@ async def show_minutes_menu(message: types.Message, user_id, timer_type):
 
 
 # --- 4. ПІДМЕНЮ: ТИПИ СПОВІЩЕНЬ ---
-async def show_types_menu(message: types.Message, user_id):
-    settings = await db.get_user_settings(user_id)
+async def show_types_menu(message: types.Message, user_id, chat_id):
+    
+    settings = await db.get_chat_user_settings(chat_id, user_id)
     
     text = (
         f"🔔 **Налаштування сповіщень**\n\n"
@@ -188,8 +259,9 @@ async def show_types_menu(message: types.Message, user_id):
 
 
 # --- 5. ПІДМЕНЮ: ВИГЛЯД ГРАФІКУ ---
-async def show_mode_menu(message: types.Message, user_id):
-    settings = await db.get_user_settings(user_id)
+async def show_mode_menu(message: types.Message, user_id, chat_id):
+    
+    settings = await db.get_chat_user_settings(chat_id, user_id)
     current = settings['display_mode']
     
     text = (
@@ -215,7 +287,7 @@ async def show_mode_menu(message: types.Message, user_id):
 
 @router.callback_query(F.data == "menu_main")
 async def nav_main(callback: types.CallbackQuery):
-    await show_settings_main(callback.message, callback.from_user.id, edit=True)
+    await show_settings_main(callback.message, callback.from_user.id, callback.message.chat.id, edit=True)
 
 @router.callback_query(F.data == "menu_time_select")
 async def nav_time_select(callback: types.CallbackQuery):
@@ -226,15 +298,15 @@ async def nav_time_select(callback: types.CallbackQuery):
 async def nav_time_edit(callback: types.CallbackQuery):
     """Показує вибір хвилин для конкретного типу."""
     timer_type = callback.data.split("|")[1] # outage або return
-    await show_minutes_menu(callback.message, callback.from_user.id, timer_type)
+    await show_minutes_menu(callback.message, callback.from_user.id, callback.message.chat.id, timer_type)
 
 @router.callback_query(F.data == "menu_types")
 async def nav_types(callback: types.CallbackQuery):
-    await show_types_menu(callback.message, callback.from_user.id)
+    await show_types_menu(callback.message, callback.from_user.id, callback.message.chat.id)
 
 @router.callback_query(F.data == "menu_mode")
 async def nav_mode(callback: types.CallbackQuery):
-    await show_mode_menu(callback.message, callback.from_user.id)
+    await show_mode_menu(callback.message, callback.from_user.id, callback.message.chat.id)
 
 @router.callback_query(F.data.startswith("set_time|"))
 async def set_notify_time(callback: types.CallbackQuery):
@@ -243,27 +315,38 @@ async def set_notify_time(callback: types.CallbackQuery):
     timer_type = parts[1] # outage або return
     minutes = int(parts[2])
     
-    # Визначаємо, в яку колонку писати
+    # Визначаємо колонку в БД
     col_name = "notify_before" if timer_type == "outage" else "notify_return_before"
     
-    await db.update_user_setting(callback.from_user.id, col_name, minutes)
+    # ВИКОРИСТОВУЄМО update_chat_user_setting (Працює і для груп, і для особистих)
+    await db.update_chat_user_setting(callback.message.chat.id, callback.from_user.id, col_name, minutes)
     
-    # Оновлюємо це ж меню, щоб показати нову галочку
-    await show_minutes_menu(callback.message, callback.from_user.id, timer_type)
+    await show_minutes_menu(callback.message, callback.from_user.id, callback.message.chat.id, timer_type)
 
 @router.callback_query(F.data.startswith("toggle|"))
 async def toggle_setting(callback: types.CallbackQuery):
     key = callback.data.split("|")[1]
-    settings = await db.get_user_settings(callback.from_user.id)
+    
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    
+    # Отримуємо поточне значення (вже враховуючи специфіку чату)
+    settings = await db.get_chat_user_settings(chat_id, user_id)
     new_val = 0 if settings[key] else 1
-    await db.update_user_setting(callback.from_user.id, key, new_val)
-    await show_types_menu(callback.message, callback.from_user.id)
+    
+    # Зберігаємо нове значення для цього чату
+    await db.update_chat_user_setting(chat_id, user_id, key, new_val)
+    
+    await show_types_menu(callback.message, user_id, chat_id)
 
 @router.callback_query(F.data.startswith("set_mode|"))
 async def set_display_mode(callback: types.CallbackQuery):
     new_mode = callback.data.split("|")[1]
-    await db.update_user_setting(callback.from_user.id, "display_mode", new_mode)
-    await show_mode_menu(callback.message, callback.from_user.id)
+    
+    # Зберігаємо для цього чату
+    await db.update_chat_user_setting(callback.message.chat.id, callback.from_user.id, "display_mode", new_mode)
+    
+    await show_mode_menu(callback.message, callback.from_user.id, callback.message.chat.id)
 
 @router.callback_query(F.data == "open_regions")
 async def open_regions_handler(callback: types.CallbackQuery):
@@ -276,7 +359,7 @@ async def close_settings_handler(callback: types.CallbackQuery):
 
 
 # ==========================================
-# === ЛОГІКА ВИБОРУ РЕГІОНУ (СТАРА) ===
+# === ЛОГІКА ВИБОРУ РЕГІОНУ (ГЛОБАЛЬНА) ===
 # ==========================================
 
 async def show_regions_menu(message: types.Message, text):
@@ -289,6 +372,8 @@ async def show_regions_menu(message: types.Message, text):
     for region in data['regions']:
         kb.button(text=region['name_ua'], callback_data=f"reg|{region['name_ua']}")
     kb.adjust(2)
+    
+    # Кнопку відписки додаємо
     kb.row(InlineKeyboardButton(text="🔕 Зупинити бота (Відписатися)", callback_data="unsub"))
     await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
@@ -310,35 +395,37 @@ async def select_region(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("q|"))
 async def select_queue(callback: types.CallbackQuery):
     _, region, queue = callback.data.split("|")
+    # Зберігаємо ГЛОБАЛЬНО (бо черга прив'язана до юзера)
     await db.save_user(callback.from_user.id, region, queue)
     await callback.message.delete()
+    
     await callback.message.answer(
         f"✅ Налаштування збережено!\n📍 {region}, Черга {queue}", 
         reply_markup=get_main_keyboard(callback.from_user.id)
     )
     
-    # 1. Показуємо графік
     await show_today_schedule(callback.message, region, queue, user_id=callback.from_user.id)
     
-    # 2. НОВА ФІЧА: Відправляємо підказку про налаштування
     await asyncio.sleep(0.5) 
-    await callback.message.answer(
-        "💡 **Маленька порада!**\n\n"
-        "У меню **⚙️ Налаштування** ви можете:\n"
-        "⏰ Змінити час сповіщення\n"
-        "🎨 Вибрати «зелений» графік (коли світло є)\n"
-        "🔔 Налаштувати повідомлення під себе",
-        parse_mode="Markdown"
-    )
+    # В залежності від контексту, даємо різну пораду
+    if callback.message.chat.type in ['group', 'supergroup']:
+        msg_text = "💡 **Маленька порада!**\nВи можете налаштувати сповіщення окремо для цієї групи в меню **⚙️ Налаштування**."
+    else:
+        msg_text = "💡 **Маленька порада!**\nУ меню **⚙️ Налаштування** ви можете змінити час сповіщення та вигляд графіку."
+        
+    await callback.message.answer(msg_text, parse_mode="Markdown")
 
 
 async def show_today_schedule(message, region, queue, user_id=None):
     uid = user_id if user_id else message.from_user.id
+    chat_id = message.chat.id
     
     today = get_local_now().strftime('%Y-%m-%d')
     schedule = None
     
-    settings = await db.get_user_settings(uid)
+    # Тут використовуємо get_chat_user_settings, щоб знати, який колір (display_mode)
+    # хоче бачити цей юзер саме в цьому чаті
+    settings = await db.get_chat_user_settings(chat_id, uid)
     display_mode = settings.get('display_mode', 'blackout')
 
     cached_data = scheduler.schedules_cache.get((region, queue))
@@ -357,6 +444,12 @@ async def show_today_schedule(message, region, queue, user_id=None):
         await db.save_stats(region, queue, today, api.calculate_off_hours(schedule))
     
     text = api.format_message(schedule, queue, today, is_tomorrow=False, display_mode=display_mode)
+    
+    # Якщо це група, додаємо згадку користувача, щоб він знав, що це ЙОГО графік
+    if message.chat.type in ['group', 'supergroup']:
+        user_name = message.from_user.first_name
+        text = f"👤 **{user_name}**, твій графік:\n" + text
+
     await message.answer(text, parse_mode="Markdown")
 
 
@@ -364,23 +457,45 @@ async def show_today_schedule(message, region, queue, user_id=None):
 
 @router.message(F.text == "⚙️ Налаштування")
 async def btn_settings(message: types.Message):
-    # ВІДКРИВАЄ НОВЕ ГОЛОВНЕ МЕНЮ
-    await show_settings_main(message, message.from_user.id)
+    # ВІДКРИВАЄ НОВЕ ГОЛОВНЕ МЕНЮ (вже адаптоване)
+    await show_settings_main(message, message.from_user.id, message.chat.id)
 
 @router.message(F.text == "📅 Графік на сьогодні")
 async def btn_today(message: types.Message):
+    # Отримуємо ГЛОБАЛЬНІ налаштування регіону/черги
     user = await db.get_user(message.from_user.id)
     if not user: 
-        return await message.answer("Спочатку зробіть налаштування.")
+        if message.chat.type in ['group', 'supergroup']:
+             # ДОДАВ КНОПКУ ТУТ, ЯКЩО ЮЗЕР НЕ ЗНАЙДЕНИЙ
+             kb = InlineKeyboardBuilder()
+             try:
+                 bot_username = (await message.bot.me()).username
+                 kb.button(text="🤖 Запустити бота", url=f"https://t.me/{bot_username}?start")
+             except: pass
+             await message.answer("⚠️ Я не знаю вашого регіону. Натисніть кнопку нижче, щоб налаштувати:", reply_markup=kb.as_markup())
+        else:
+             await message.answer("Спочатку зробіть налаштування.")
+        return
     await show_today_schedule(message, user[0], user[1], user_id=message.from_user.id)
 
 @router.message(F.text == "🔮 Графік на завтра")
 async def btn_tomorrow(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: 
-        return await message.answer("Спочатку налаштування.")
+        if message.chat.type in ['group', 'supergroup']:
+             # ДОДАВ КНОПКУ ТУТ
+             kb = InlineKeyboardBuilder()
+             try:
+                 bot_username = (await message.bot.me()).username
+                 kb.button(text="🤖 Запустити бота", url=f"https://t.me/{bot_username}?start")
+             except: pass
+             await message.answer("⚠️ Я не знаю вашого регіону. Натисніть кнопку нижче, щоб налаштувати:", reply_markup=kb.as_markup())
+        else:
+             await message.answer("Спочатку налаштування.")
+        return
     
-    settings = await db.get_user_settings(message.from_user.id)
+    # Отримуємо налаштування для ЦЬОГО чату (display_mode)
+    settings = await db.get_chat_user_settings(message.chat.id, message.from_user.id)
     display_mode = settings.get('display_mode', 'blackout')
 
     tomorrow = (get_local_now() + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -403,12 +518,24 @@ async def btn_tomorrow(message: types.Message):
         await db.save_stats(user[0], user[1], tomorrow, api.calculate_off_hours(schedule))
     
     text = api.format_message(schedule, user[1], tomorrow, is_tomorrow=True, display_mode=display_mode)
+    
+    if message.chat.type in ['group', 'supergroup']:
+        user_name = message.from_user.first_name
+        text = f"👤 **{user_name}**, твій графік:\n" + text
+        
     await message.answer(text, parse_mode="Markdown")
 
 @router.message(F.text == "📊 Аналітика")
 async def btn_stats(message: types.Message):
     user = await db.get_user(message.from_user.id)
     if not user: 
+        if message.chat.type in ['group', 'supergroup']:
+             kb = InlineKeyboardBuilder()
+             try:
+                 bot_username = (await message.bot.me()).username
+                 kb.button(text="🤖 Запустити бота", url=f"https://t.me/{bot_username}?start")
+             except: pass
+             await message.answer("⚠️ Я не знаю вашого регіону.", reply_markup=kb.as_markup())
         return
 
     api_data = await api.fetch_api_data()
@@ -465,7 +592,10 @@ async def unsub_handler(callback: types.CallbackQuery):
 
 @router.message(F.text == "💬 Підтримка")
 async def btn_support(message: types.Message):
-    """Кнопка підтримки - переводить користувача в режим відправки повідомлення."""
+    if message.chat.type in ['group', 'supergroup']:
+        await message.answer("💬 Пишіть у підтримку в особисті повідомлення боту.")
+        return
+
     await message.answer(
         "💬 **Служба підтримки**\n\n"
         "Напишіть ваше повідомлення, і адміністратор відповість вам найближчим часом.", 
@@ -476,7 +606,6 @@ async def btn_support(message: types.Message):
 
 @router.callback_query(F.data.startswith("user_reply|"))
 async def user_reply_click(callback: types.CallbackQuery):
-    """Користувач натиснув кнопку 'Відповісти' під повідомленням адміна."""
     ticket_id = callback.data.split("|")[1]
     
     ticket_info = await db.get_ticket_info(int(ticket_id))
@@ -494,7 +623,6 @@ async def user_reply_click(callback: types.CallbackQuery):
 @router.message(F.text == "👨‍💼 Адмін-панель")
 @router.message(Command("admin"))
 async def admin_menu(message: types.Message):
-    """Відкриває адмін-панель."""
     if message.from_user.id != ADMIN_ID: 
         return
     
@@ -519,7 +647,6 @@ async def admin_menu(message: types.Message):
 
 @router.message(F.text == "📨 Розсилка всім")
 async def broadcast_start(message: types.Message):
-    """Починає процес розсилки."""
     if message.from_user.id != ADMIN_ID: 
         return
     await message.answer("📨 **Розсилка всім**\nНапишіть текст повідомлення (максимум 4000 символів):")
@@ -528,7 +655,6 @@ async def broadcast_start(message: types.Message):
 
 @router.message(F.text.startswith("📋 Підтримка"))
 async def support_tickets_menu(message: types.Message):
-    """Відкриває меню тікетів підтримки."""
     if message.from_user.id != ADMIN_ID: 
         return
     
@@ -545,7 +671,6 @@ async def support_tickets_menu(message: types.Message):
 
 @router.callback_query(F.data.startswith("tickets|"))
 async def show_tickets_list(callback: types.CallbackQuery):
-    """Показує список тікетів."""
     if callback.from_user.id != ADMIN_ID: 
         return
     
@@ -566,7 +691,6 @@ async def show_tickets_list(callback: types.CallbackQuery):
     
     for ticket in tickets:
         ticket_id, user_id, username, *rest = ticket
-        # ФІКС: додаємо собачку @ перед ніком
         display_name = f"@{username}" if username else f"ID: {user_id}"
 
         if ticket_type == "all":
@@ -584,7 +708,6 @@ async def show_tickets_list(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("viewticket|"))
 async def view_ticket(callback: types.CallbackQuery):
-    """Показує деталі тікету."""
     if callback.from_user.id != ADMIN_ID: 
         return
     
@@ -599,7 +722,6 @@ async def view_ticket(callback: types.CallbackQuery):
     
     messages = await db.get_ticket_messages(ticket_id)
     
-    # ФІКС: додаємо @ до ніка
     text = f"💬 **Звернення #{ticket_id}**\n"
     text += f"👤 @{username or 'Unknown'} (ID: {user_id})\n"
     text += f"📊 Статус: {status}\n"
@@ -624,7 +746,6 @@ async def view_ticket(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("reply|"))
 async def admin_reply_click(callback: types.CallbackQuery):
-    """Адмін натискає кнопку відповіді."""
     if callback.from_user.id != ADMIN_ID: 
         return
     
@@ -636,7 +757,6 @@ async def admin_reply_click(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("close|"))
 async def close_ticket_handler(callback: types.CallbackQuery):
-    """Закриває тікет."""
     if callback.from_user.id != ADMIN_ID: 
         return
     
@@ -648,7 +768,6 @@ async def close_ticket_handler(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("reopen|"))
 async def reopen_ticket_handler(callback: types.CallbackQuery):
-    """Відкриває тікет знову."""
     if callback.from_user.id != ADMIN_ID: 
         return
     
@@ -678,7 +797,6 @@ async def back_to_main(message: types.Message):
 
 @router.message(F.text)
 async def handle_text_messages(message: types.Message):
-    """Єдиний обробник всіх текстових повідомлень."""
     user_id = message.from_user.id
     mode = await db.get_user_mode(user_id)
 
@@ -725,8 +843,6 @@ async def handle_text_messages(message: types.Message):
         target_user_id, username, status = ticket_info
         
         await db.save_support_message(ticket_id, "admin", message.text)
-        
-        # ФІКС: Тільки після відповіді помічаємо як прочитане
         await db.mark_ticket_read(ticket_id)
         
         try:
@@ -749,6 +865,9 @@ async def handle_text_messages(message: types.Message):
 
     # 3. КОРИСТУВАЧ: ПІДТРИМКА
     if mode == "support":
+        if message.chat.type in ['group', 'supergroup']:
+            return 
+            
         if len(message.text) > 3000:
             await message.answer("❌ **Повідомлення занадто довге!**", parse_mode="Markdown")
             return
@@ -765,7 +884,6 @@ async def handle_text_messages(message: types.Message):
             
             display_text = message.text[:500] + "..." if len(message.text) > 500 else message.text
             
-            # === ФІКС: ПРИБРАНО parse_mode ДЛЯ АДМІНА ===
             await message.bot.send_message(
                 ADMIN_ID,
                 f"🔔 Нове повідомлення в тікеті #{ticket_id}\n"
@@ -801,7 +919,6 @@ async def handle_text_messages(message: types.Message):
             
             display_text = message.text[:500] + "..." if len(message.text) > 500 else message.text
             
-            # === ФІКС: ПРИБРАНО parse_mode ДЛЯ АДМІНА ===
             await message.bot.send_message(
                 ADMIN_ID,
                 f"🔔 Нова відповідь в тікеті #{ticket_id}\n"
@@ -818,4 +935,6 @@ async def handle_text_messages(message: types.Message):
         await message.answer("🏠 Головне меню", reply_markup=get_main_keyboard(user_id))
         return
 
-    await message.answer("❓ Не розумію вашу команду. Використовуйте кнопки меню.")
+    # Якщо команда не розпізнана і це не група
+    if message.chat.type == 'private':
+        await message.answer("❓ Не розумію вашу команду. Використовуйте кнопки меню.")
