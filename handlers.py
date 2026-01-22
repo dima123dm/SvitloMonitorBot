@@ -84,7 +84,7 @@ async def show_settings_main(message: types.Message, user_id, edit=False):
     
     # Кнопки навігації (ієрархія зі стрілочками)
     kb.button(text="⏰ Час сповіщень >", callback_data="menu_time")
-    kb.button(text="🔔 Типи сповіщень >", callback_data="menu_types")
+    kb.button(text="🔔 Налаштування сповіщень >", callback_data="menu_types")
     
     # Тепер це теж підменю
     kb.button(text="🎨 Вигляд графіку >", callback_data="menu_mode")
@@ -281,7 +281,21 @@ async def select_queue(callback: types.CallbackQuery):
         f"✅ Налаштування збережено!\n📍 {region}, Черга {queue}", 
         reply_markup=get_main_keyboard(callback.from_user.id)
     )
+    
+    # 1. Показуємо графік
     await show_today_schedule(callback.message, region, queue, user_id=callback.from_user.id)
+    
+    # 2. НОВА ФІЧА: Відправляємо підказку про налаштування
+    await asyncio.sleep(0.5) 
+    await callback.message.answer(
+        "💡 **Маленька порада!**\n\n"
+        "Ви можете налаштувати бота під себе:\n"
+        "⏰ Змінити час сповіщення\n"
+        "🎨 Змінити режим відображення графіку\n"
+        "🔔 Вимкнути зайві сповіщення\n\n"
+        "👉 Тисніть кнопку **⚙️ Налаштування** в меню.",
+        parse_mode="Markdown"
+    )
 
 
 async def show_today_schedule(message, region, queue, user_id=None):
@@ -402,7 +416,6 @@ async def btn_stats(message: types.Message):
 
     total_str = f"{int(total)}" if total == int(total) else f"{total:.1f}"
 
-    # ЗМІНЕНО ЗАГОЛОВОК
     text = (
         f"📊 **Статистика відключень (останні 7 днів)**\n"
         f"📍 {user[0]}, Черга {user[1]}\n\n" +

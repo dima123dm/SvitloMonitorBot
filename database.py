@@ -19,11 +19,10 @@ async def init_db():
 
         # === МІГРАЦІЯ: ДОДАВАННЯ НАЛАШТУВАНЬ (Personalization 2.0) ===
         # Додаємо нові колонки до існуючої таблиці users.
-        # Використовуємо try-except, щоб не було помилки, якщо колонки вже існують.
         
         try:
-            # Час попередження (за замовчуванням 15 хв)
-            await db.execute("ALTER TABLE users ADD COLUMN notify_before INTEGER DEFAULT 15")
+            # Час попередження (за замовчуванням 5 хв)
+            await db.execute("ALTER TABLE users ADD COLUMN notify_before INTEGER DEFAULT 5")
         except: pass
         
         try:
@@ -125,7 +124,7 @@ async def get_user_settings(user_id):
     async with aiosqlite.connect(DB_NAME) as db:
         # Якщо користувача немає або поля пусті, повертаємо дефолтні налаштування
         defaults = {
-            "notify_before": 15, 
+            "notify_before": 5, # СТАНДАРТ: 5 ХВИЛИН
             "notify_outage": 1, 
             "notify_return": 1, 
             "notify_changes": 1, 
@@ -143,7 +142,7 @@ async def get_user_settings(user_id):
                 if row:
                     # Якщо значення NULL (наприклад, старий юзер), беремо дефолт
                     return {
-                        "notify_before": row[0] if row[0] is not None else 15,
+                        "notify_before": row[0] if row[0] is not None else 5, # СТАНДАРТ: 5 ХВИЛИН
                         "notify_outage": row[1] if row[1] is not None else 1,
                         "notify_return": row[2] if row[2] is not None else 1,
                         "notify_changes": row[3] if row[3] is not None else 1,
