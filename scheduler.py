@@ -6,7 +6,7 @@ import api_utils as api
 import database as db
 from config import UPDATE_INTERVAL
 
-# Кеш в пам'яті
+# Кеш в пам'яті: {(region, queue): {"date": "2024-01-24", "today": ..., "tomorrow": ...}}
 schedules_cache = {} 
 # Історія сповіщень
 alert_history = set()
@@ -79,29 +79,38 @@ async def check_updates(bot):
                     today_sch = r_data['schedule'].get(queue, {}).get(today, None)
                     tom_sch = r_data['schedule'].get(queue, {}).get(tomorrow, None)
 
+                    # Отримуємо кеш
                     cached = schedules_cache.get((region, queue), {})
-                    cached_today = cached.get("today")
-                    cached_tom = cached.get("tomorrow")
+                    
+                    # === ФІКС ОПІВНОЧІ ===
+                    # Перевіряємо, чи дата в кеші актуальна.
+                    # Якщо в кеші стара дата (вчора), ми НЕ порівнюємо з нею,
+                    # бо це викличе помилкове сповіщення про зміну графіку.
+                    cached_date = cached.get("date")
+                    
+                    if cached_date != today:
+                        # Дата змінилася або кеш пустий -> це "перший запуск" для нового дня
+                        cached_today = None
+                        cached_tom = None
+                    else:
+                        cached_today = cached.get("today")
+                        cached_tom = cached.get("tomorrow")
 
                     # --- 1. ПЕРЕВІРКА СЬОГОДНІ ---
                     if today_sch:
                         await db.save_stats(region, queue, today, api.calculate_off_hours(today_sch))
                         
                         # НОРМАЛІЗАЦІЯ ДЛЯ ПОРІВНЯННЯ
-                        # Перетворюємо обидва формати (сайт і API) в єдиний список кортежів
-                        # Це дозволяє уникнути помилкових спрацьовувань при зміні джерела даних
                         current_norm = api.parse_intervals(today_sch)
                         cached_norm = api.parse_intervals(cached_today) if cached_today else None
 
                         if cached_norm is not None and json.dumps(current_norm, sort_keys=True) != json.dumps(cached_norm, sort_keys=True):
-                             # Генеруємо два варіанти тексту (для різних режимів)
+                             # Генеруємо два варіанти тексту
                              txt_b = api.format_message(today_sch, queue, today, False, "blackout")
                              txt_l = api.format_message(today_sch, queue, today, False, "light")
                              
-                             # Додано перевірку not first_run
                              if not first_run:
                                 header = f"🔄 📅 **Оновлено графік на СЬОГОДНІ! ({today_nice})**\n"
-                                # Фільтр: тільки ті, хто хоче знати про зміни (notify_changes == 1)
                                 await smart_broadcast(
                                     bot, region, queue, 
                                     header + txt_b.split('\n', 1)[1], 
@@ -110,10 +119,11 @@ async def check_updates(bot):
                                 )
 
                     # --- 2. ПЕРЕВІРКА ЗАВТРА ---
-                    # Новий графік з'явився
+                    # Новий графік з'явився (раніше було None, тепер є дані)
                     if (tom_sch is not None) and (cached_tom is None):
                         await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
                         
+                        # Сповіщаємо, тільки якщо там реально є відключення (> 0 годин)
                         if not first_run and api.calculate_off_hours(tom_sch) > 0:
                             txt_b = api.format_message(tom_sch, queue, tomorrow, True, "blackout")
                             txt_l = api.format_message(tom_sch, queue, tomorrow, True, "light")
@@ -123,9 +133,8 @@ async def check_updates(bot):
                                 lambda s: s['notify_changes'] == 1
                             )
                     
-                    # Графік змінився
+                    # Графік змінився (були одні дані, стали інші)
                     elif (tom_sch is not None) and (cached_tom is not None):
-                        # НОРМАЛІЗАЦІЯ ДЛЯ ЗАВТРА
                         tom_norm = api.parse_intervals(tom_sch)
                         cached_tom_norm = api.parse_intervals(cached_tom)
 
@@ -145,7 +154,8 @@ async def check_updates(bot):
                                         lambda s: s['notify_changes'] == 1
                                     )
 
-                    schedules_cache[(region, queue)] = {"today": today_sch, "tomorrow": tom_sch}
+                    # Оновлюємо кеш з поточною датою
+                    schedules_cache[(region, queue)] = {"date": today, "today": today_sch, "tomorrow": tom_sch}
 
                 # Додатково зберігаємо статистику
                 current_date = datetime.now()
@@ -216,7 +226,6 @@ async def check_alerts(bot):
                                     alert_history.add(alert_id)
 
                     # === 2. СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ (notify_return_before) - НОВЕ ===
-                    # Якщо світло має з'явитись (кінець відключення)
                     if end != "24:00":
                         for mins, check_time in check_moments.items():
                             if check_time == end:
@@ -224,7 +233,6 @@ async def check_alerts(bot):
                                 if alert_id not in alert_history:
                                     msg = f"💡 **Світло з'явиться орієнтовно через {mins} хв (о {end}).**"
                                     
-                                    # Фільтр: notify_return=1 ТА notify_return_before=mins
                                     await smart_broadcast(
                                         bot, key[0], key[1], msg, msg,
                                         lambda s, m=mins: s['notify_return'] == 1 and s['notify_return_before'] == m
@@ -259,7 +267,6 @@ async def check_alerts(bot):
                                    f"Включення за графіком ({end}).\n"
                                    f"{next_info}")
                             
-                            # Фільтр: тільки ті, хто хоче знати про включення
                             await smart_broadcast(
                                 bot, key[0], key[1], msg, msg,
                                 lambda s: s['notify_return'] == 1
