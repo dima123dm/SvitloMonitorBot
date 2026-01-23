@@ -226,9 +226,8 @@ def parse_intervals(schedule_data, target_status=2, inverse=False):
                 except: pass
             return sorted(result)
         else:
-            # Якщо треба "Світло Є" (inverse=True) з інтервалів відключень - це складно (інверсія).
-            # Поки що для простоти повернемо пустий список або реалізуємо інверсію пізніше.
-            # Щоб не ламати логіку, повертаємо пустий список для "світлого" режиму сайту поки що.
+            # Якщо треба "Світло Є", ми повернемо порожній список тут, 
+            # бо інверсію ми тепер робимо через invert_schedule() в format_message
             return [] 
 
     # === ВАРІАНТ 2: ДАНІ З API (Словник "00:00": 2) ===
@@ -268,6 +267,56 @@ def parse_intervals(schedule_data, target_status=2, inverse=False):
     
     return []
 
+def invert_schedule(blackout_intervals):
+    """
+    Перетворює список відключень (напр. ['02:00-08:00']) 
+    на список світла (напр. ['00:00-02:00', '08:00-24:00']).
+    Повертає список кортежів [('00:00', '02:00'), ...].
+    """
+    light_intervals = []
+    
+    # Парсимо відключення у хвилини (0..1440)
+    parsed_blackouts = []
+    for interval in blackout_intervals:
+        try:
+            start_s, end_s = interval.split('-')
+            sh, sm = map(int, start_s.split(':'))
+            start_min = sh * 60 + sm
+            
+            if end_s == "24:00":
+                end_min = 1440
+            else:
+                eh, em = map(int, end_s.split(':'))
+                end_min = eh * 60 + em
+                if end_min == 0 and start_min > 0:
+                    end_min = 1440
+            
+            parsed_blackouts.append((start_min, end_min))
+        except: continue
+            
+    parsed_blackouts.sort()
+
+    last_end = 0
+    
+    for start, end in parsed_blackouts:
+        if start > last_end:
+            light_intervals.append((last_end, start))
+        last_end = max(last_end, end)
+        
+    if last_end < 1440:
+        light_intervals.append((last_end, 1440))
+        
+    # Форматуємо назад у кортежі
+    result = []
+    for start, end in light_intervals:
+        s_h, s_m = divmod(start, 60)
+        e_h, e_m = divmod(end, 60)
+        s_str = f"{s_h:02}:{s_m:02}"
+        e_str = "24:00" if end == 1440 else f"{e_h:02}:{e_m:02}"
+        result.append((s_str, e_str))
+        
+    return result
+
 def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, display_mode="blackout"):
     """Створює текст повідомлення з урахуванням налаштувань користувача."""
     
@@ -288,18 +337,17 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
     # --- НАЛАШТУВАННЯ ВІДОБРАЖЕННЯ ---
     if display_mode == "light":
         # РЕЖИМ: СВІТЛО Є
-        intervals = parse_intervals(schedule_json, target_status=2, inverse=True)
-        # Якщо це дані з сайту (list), інверсія поки складна, тому покажемо заглушку або відключення
         if isinstance(schedule_json, list):
-             # Тимчасово для сайту показуємо "Світло є" як "Всі години мінус відключення"
-             # Але візуально покажемо відключення з іншим заголовком
-             intervals = parse_intervals(schedule_json, target_status=2, inverse=False)
-             emoji_main = "⬛" # Показуємо чорним, бо це відключення
-             header_text = "Графік (дані з сайту - тільки відключення)"
+            # Дані з сайту (це список відключень) -> ТРЕБА ІНВЕРТУВАТИ
+            blackout_tuples = parse_intervals(schedule_json, target_status=2, inverse=False)
+            blackout_strs = [f"{s}-{e}" for s, e in blackout_tuples]
+            intervals = invert_schedule(blackout_strs)
         else:
-             emoji_main = "🟢"
-             header_text = f"Графік наявності світла"
+            # Дані з API (словник) -> стандартний парсер вміє інвертувати
+            intervals = parse_intervals(schedule_json, target_status=2, inverse=True)
 
+        emoji_main = "🟢"
+        header_text = f"Графік наявності світла"
         emoji_header = "💡"
         empty_text = "😔 **Світла не передбачено.** (Повний блекаут)"
         total_hours = calculate_on_hours(schedule_json)
@@ -308,7 +356,7 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
     else:
         # РЕЖИМ: ВІДКЛЮЧЕННЯ (BLACKOUT) - Стандартний
         intervals = parse_intervals(schedule_json, target_status=2, inverse=False)
-        emoji_main = "🕒" 
+        emoji_main = "⬛" # Чорний квадрат для відключень
         emoji_header = "💡"
         
         empty_text = "✅ **Відключень не передбачено.** (Світло є)"
@@ -326,10 +374,14 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
          return f"🕒 **Графік на завтра ({date_nice}) ще не оприлюднено.**\n(Або відключень не планується)"
 
     # ТІЛО ПОВІДОМЛЕННЯ
-    if not intervals and total_hours == 0 and display_mode == "blackout":
-        body = empty_text
-    elif not intervals and display_mode == "light" and isinstance(schedule_json, dict):
-        body = empty_text
+    if not intervals:
+        # Перевірка: якщо годин 0 - значить повний протилежний стан
+        if total_hours == 0:
+            body = empty_text
+        else:
+             # Якщо годин > 0, але інтервалів немає (наприклад, цілодобово)
+             # Тут можна додати логіку, але зазвичай parse_intervals повертає 00-24
+             body = empty_text 
     else:
         lines = []
         for start, end in intervals:
@@ -360,9 +412,11 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
     )
     
     # Додаємо підсумок годин
-    if total_hours > 0 or display_mode == "light":
+    if total_hours > 0:
          text += f"{total_label}: **{total_str} год.**"
-    else:
+    elif display_mode == "light":
          text += f"⚡️ Світло має бути весь день."
+    else:
+         text += f"✨ Світло є весь день."
 
     return text
