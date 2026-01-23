@@ -356,7 +356,7 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
     else:
         # РЕЖИМ: ВІДКЛЮЧЕННЯ (BLACKOUT) - Стандартний
         intervals = parse_intervals(schedule_json, target_status=2, inverse=False)
-        emoji_main = "⬛" # Чорний квадрат для відключень
+        emoji_main = "🕒" # <-- ПОВЕРНУВ ГОДИННИК ТУТ
         emoji_header = "💡"
         
         empty_text = "✅ **Відключень не передбачено.** (Світло є)"

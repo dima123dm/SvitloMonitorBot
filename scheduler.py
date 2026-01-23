@@ -87,7 +87,13 @@ async def check_updates(bot):
                     if today_sch:
                         await db.save_stats(region, queue, today, api.calculate_off_hours(today_sch))
                         
-                        if cached_today and json.dumps(today_sch, sort_keys=True) != json.dumps(cached_today, sort_keys=True):
+                        # НОРМАЛІЗАЦІЯ ДЛЯ ПОРІВНЯННЯ
+                        # Перетворюємо обидва формати (сайт і API) в єдиний список кортежів
+                        # Це дозволяє уникнути помилкових спрацьовувань при зміні джерела даних
+                        current_norm = api.parse_intervals(today_sch)
+                        cached_norm = api.parse_intervals(cached_today) if cached_today else None
+
+                        if cached_norm is not None and json.dumps(current_norm, sort_keys=True) != json.dumps(cached_norm, sort_keys=True):
                              # Генеруємо два варіанти тексту (для різних режимів)
                              txt_b = api.format_message(today_sch, queue, today, False, "blackout")
                              txt_l = api.format_message(today_sch, queue, today, False, "light")
@@ -118,21 +124,26 @@ async def check_updates(bot):
                             )
                     
                     # Графік змінився
-                    elif (tom_sch is not None) and (cached_tom is not None) and (json.dumps(tom_sch, sort_keys=True) != json.dumps(cached_tom, sort_keys=True)):
-                        await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
-                        
-                        if not first_run:
-                            txt_b = api.format_message(tom_sch, queue, tomorrow, True, "blackout")
-                            txt_l = api.format_message(tom_sch, queue, tomorrow, True, "light")
+                    elif (tom_sch is not None) and (cached_tom is not None):
+                        # НОРМАЛІЗАЦІЯ ДЛЯ ЗАВТРА
+                        tom_norm = api.parse_intervals(tom_sch)
+                        cached_tom_norm = api.parse_intervals(cached_tom)
+
+                        if json.dumps(tom_norm, sort_keys=True) != json.dumps(cached_tom_norm, sort_keys=True):
+                            await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
                             
-                            if txt_b:
-                                header = f"🔄 🔮 **Оновлено графік на ЗАВТРА! ({tomorrow_nice})**\n"
-                                await smart_broadcast(
-                                    bot, region, queue, 
-                                    header + txt_b.split('\n', 1)[1], 
-                                    header + txt_l.split('\n', 1)[1],
-                                    lambda s: s['notify_changes'] == 1
-                                )
+                            if not first_run:
+                                txt_b = api.format_message(tom_sch, queue, tomorrow, True, "blackout")
+                                txt_l = api.format_message(tom_sch, queue, tomorrow, True, "light")
+                                
+                                if txt_b:
+                                    header = f"🔄 🔮 **Оновлено графік на ЗАВТРА! ({tomorrow_nice})**\n"
+                                    await smart_broadcast(
+                                        bot, region, queue, 
+                                        header + txt_b.split('\n', 1)[1], 
+                                        header + txt_l.split('\n', 1)[1],
+                                        lambda s: s['notify_changes'] == 1
+                                    )
 
                     schedules_cache[(region, queue)] = {"today": today_sch, "tomorrow": tom_sch}
 
