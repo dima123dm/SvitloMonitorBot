@@ -388,12 +388,22 @@ async def show_today_schedule(message, region, queue, user_id=None):
     
     text = api.format_message(schedule, queue, today, is_tomorrow=False, display_mode=display_mode)
     
-    # Якщо це група, додаємо згадку користувача, щоб він знав, що це ЙОГО графік
+    # === ВИПРАВЛЕННЯ: Безпечна згадка імені ===
     if message.chat.type in ['group', 'supergroup']:
-        user_name = message.from_user.first_name
-        text = f"👤 **{user_name}**, твій графік:\n" + text
+        # Якщо у юзера ім'я типу "User_Name" або "*Admin*", це ламає Markdown.
+        # Тому ми вирізаємо небезпечні символи.
+        raw_name = message.from_user.first_name or "Користувач"
+        safe_name = raw_name.replace("*", "").replace("_", "").replace("`", "").replace("[", "")
+        text = f"👤 **{safe_name}**, твій графік:\n" + text
 
-    await message.answer(text, parse_mode="Markdown")
+    # Безпечна відправка
+    try:
+        await message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Помилка Markdown: {e}")
+        # Якщо помилка форматування - шлемо чистий текст без жирного шрифту
+        clean_text = text.replace("**", "").replace("__", "").replace("`", "")
+        await message.answer(clean_text)
 
 
 # --- КНОПКИ МЕНЮ ---
