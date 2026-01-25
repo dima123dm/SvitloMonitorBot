@@ -6,10 +6,13 @@ import api_utils as api
 import database as db
 from config import UPDATE_INTERVAL
 
-# Кеш в пам'яті: {(region, queue): {"date": "2024-01-24", "today": ..., "tomorrow": ...}}
+# Кеш в пам'яті
 schedules_cache = {} 
 # Історія сповіщень
 alert_history = set()
+
+# --- НОВЕ: Флаг, чи був відправлений графік сьогодні ---
+schedule_sent_today = False
 
 async def smart_broadcast(bot, region, queue, text_blackout, text_light, filter_func):
     """
@@ -53,7 +56,7 @@ def find_next_outage(current_time_str, today_intervals, tomorrow_intervals):
 
 async def check_updates(bot):
     """Перевіряє оновлення графіків на сайті."""
-    # --- ФІКС: Прапорець першого запуску ---
+    global schedule_sent_today  # Використовуємо глобальну змінну
     first_run = True
 
     while True:
@@ -66,7 +69,6 @@ async def check_updates(bot):
                 today = datetime.now().strftime('%Y-%m-%d')
                 tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
                 
-                # Форматуємо дати для красивого повідомлення (16.01)
                 today_nice = datetime.now().strftime('%d.%m')
                 tomorrow_nice = (datetime.now() + timedelta(days=1)).strftime('%d.%m')
 
@@ -79,17 +81,10 @@ async def check_updates(bot):
                     today_sch = r_data['schedule'].get(queue, {}).get(today, None)
                     tom_sch = r_data['schedule'].get(queue, {}).get(tomorrow, None)
 
-                    # Отримуємо кеш
                     cached = schedules_cache.get((region, queue), {})
-                    
-                    # === ФІКС ОПІВНОЧІ ===
-                    # Перевіряємо, чи дата в кеші актуальна.
-                    # Якщо в кеші стара дата (вчора), ми НЕ порівнюємо з нею,
-                    # бо це викличе помилкове сповіщення про зміну графіку.
                     cached_date = cached.get("date")
                     
                     if cached_date != today:
-                        # Дата змінилася або кеш пустий -> це "перший запуск" для нового дня
                         cached_today = None
                         cached_tom = None
                     else:
@@ -100,12 +95,10 @@ async def check_updates(bot):
                     if today_sch:
                         await db.save_stats(region, queue, today, api.calculate_off_hours(today_sch))
                         
-                        # НОРМАЛІЗАЦІЯ ДЛЯ ПОРІВНЯННЯ
                         current_norm = api.parse_intervals(today_sch)
                         cached_norm = api.parse_intervals(cached_today) if cached_today else None
 
                         if cached_norm is not None and json.dumps(current_norm, sort_keys=True) != json.dumps(cached_norm, sort_keys=True):
-                             # Генеруємо два варіанти тексту
                              txt_b = api.format_message(today_sch, queue, today, False, "blackout")
                              txt_l = api.format_message(today_sch, queue, today, False, "light")
                              
@@ -117,13 +110,13 @@ async def check_updates(bot):
                                     header + txt_l.split('\n', 1)[1],
                                     lambda s: s['notify_changes'] == 1
                                 )
+                                # Якщо ми відправили оновлення, то ранкове повідомлення вже не потрібне
+                                schedule_sent_today = True
 
                     # --- 2. ПЕРЕВІРКА ЗАВТРА ---
-                    # Новий графік з'явився (раніше було None, тепер є дані)
                     if (tom_sch is not None) and (cached_tom is None):
                         await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
                         
-                        # Сповіщаємо, тільки якщо там реально є відключення (> 0 годин)
                         if not first_run and api.calculate_off_hours(tom_sch) > 0:
                             txt_b = api.format_message(tom_sch, queue, tomorrow, True, "blackout")
                             txt_l = api.format_message(tom_sch, queue, tomorrow, True, "light")
@@ -133,7 +126,6 @@ async def check_updates(bot):
                                 lambda s: s['notify_changes'] == 1
                             )
                     
-                    # Графік змінився (були одні дані, стали інші)
                     elif (tom_sch is not None) and (cached_tom is not None):
                         tom_norm = api.parse_intervals(tom_sch)
                         cached_tom_norm = api.parse_intervals(cached_tom)
@@ -154,10 +146,8 @@ async def check_updates(bot):
                                         lambda s: s['notify_changes'] == 1
                                     )
 
-                    # Оновлюємо кеш з поточною датою
                     schedules_cache[(region, queue)] = {"date": today, "today": today_sch, "tomorrow": tom_sch}
 
-                # Додатково зберігаємо статистику
                 current_date = datetime.now()
                 for i in range(7):
                     d = (current_date - timedelta(days=i)).strftime('%Y-%m-%d')
@@ -174,15 +164,50 @@ async def check_updates(bot):
 
 async def check_alerts(bot):
     """Щохвилинна перевірка для сповіщень."""
+    global schedule_sent_today  # Використовуємо глобальну змінну
+
     while True:
         try:
             now = datetime.now()
             curr_time = now.strftime("%H:%M")
+            today_str = now.strftime('%Y-%m-%d')
             
+            # --- СБРОС У 00:00 ---
             if curr_time == "00:00": 
                 alert_history.clear()
+                schedule_sent_today = False # Скидаємо прапорець на новий день
 
-            # Часові точки для перевірки (5, 15, 30, 60 хвилин наперед)
+            # --- НОВЕ: РАНКОВЕ ОПОВІЩЕННЯ (06:00) ---
+            if curr_time == "06:00" and not schedule_sent_today:
+                print("☀️ Відправляю ранкове зведення...")
+                # Проходимо по всіх відомих чергах в кеші
+                for (region, queue), data in schedules_cache.items():
+                    # Переконуємось, що дані свіжі
+                    if data.get("date") != today_str: continue
+
+                    today_sch = data.get("today")
+                    if not today_sch: continue
+
+                    # Формуємо повідомлення
+                    txt_b = api.format_message(today_sch, queue, today_str, False, "blackout")
+                    txt_l = api.format_message(today_sch, queue, today_str, False, "light")
+
+                    # Заголовок
+                    header = f"☀️ **Добрий ранок! Графік на сьогодні:**\n"
+
+                    # Відправляємо тим, у кого увімкнені ранкові сповіщення (використовуємо notify_changes як прапорець підписки на важливе)
+                    # Або можна вважати це базовим функціоналом для всіх.
+                    # Тут налаштовано для всіх, хто не вимкнув notify_changes (або можна створити нову колонку в БД)
+                    await smart_broadcast(
+                        bot, region, queue,
+                        header + txt_b.split('\n', 1)[1], # Прибираємо старий заголовок, ставимо новий
+                        header + txt_l.split('\n', 1)[1],
+                        lambda s: s['notify_changes'] == 1 # Або True для всіх
+                    )
+                
+                schedule_sent_today = True # Запам'ятовуємо, що вже відправили
+
+            # Часові точки для перевірки
             check_moments = {
                 5: (now + timedelta(minutes=5)).strftime("%H:%M"),
                 15: (now + timedelta(minutes=15)).strftime("%H:%M"),
@@ -190,7 +215,6 @@ async def check_alerts(bot):
                 60: (now + timedelta(minutes=60)).strftime("%H:%M"),
             }
 
-            # ВАЖЛИВО: Використовуємо list(), щоб створити копію і не поламати цикл при оновленні кешу
             for (key, data) in list(schedules_cache.items()):
                 today_sch = data.get("today")
                 tom_sch = data.get("tomorrow")
@@ -201,14 +225,12 @@ async def check_alerts(bot):
                 tom_intervals = api.parse_intervals(tom_sch) if tom_sch else []
 
                 for start, end in today_intervals:
-                    
-                    # === 1. СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ (notify_before) ===
+                    # 1. СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ
                     if start != "00:00":
                         for mins, check_time in check_moments.items():
                             if check_time == start:
                                 alert_id = f"{key}_{start}_out_pre_{mins}"
                                 if alert_id not in alert_history:
-                                    # Визначаємо кінець
                                     actual_end = end
                                     if end == "24:00" and tom_intervals and tom_intervals[0][0] == "00:00":
                                         actual_end = tom_intervals[0][1]
@@ -218,14 +240,13 @@ async def check_alerts(bot):
                                     
                                     msg = f"⏳ **Скоро відключення (через {mins} хв).**\nСвітла не буде до **{actual_end}**."
                                     
-                                    # Фільтр: notify_outage=1 ТА notify_before=mins
                                     await smart_broadcast(
                                         bot, key[0], key[1], msg, msg,
                                         lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
                                     )
                                     alert_history.add(alert_id)
 
-                    # === 2. СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ (notify_return_before) - НОВЕ ===
+                    # 2. СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ
                     if end != "24:00":
                         for mins, check_time in check_moments.items():
                             if check_time == end:
@@ -239,7 +260,7 @@ async def check_alerts(bot):
                                     )
                                     alert_history.add(alert_id)
 
-                # --- Стик днів (23:XX -> 00:00) ---
+                # Стик днів
                 if tom_intervals and tom_intervals[0][0] == "00:00":
                     start_tom, end_tom = tom_intervals[0]
                     for mins, check_time in check_moments.items():
@@ -255,7 +276,7 @@ async def check_alerts(bot):
                                  )
                                  alert_history.add(alert_id)
 
-                # --- 3. СПОВІЩЕННЯ В МОМЕНТ ВКЛЮЧЕННЯ (notify_return) ===
+                # 3. СПОВІЩЕННЯ В МОМЕНТ ВКЛЮЧЕННЯ
                 for start, end in today_intervals:
                     if curr_time == end and end != "24:00":
                         alert_id = f"{key}_{end}_on"
