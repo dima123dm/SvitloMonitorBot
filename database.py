@@ -72,6 +72,16 @@ async def init_db():
             )
         """)
         
+        # === НОВЕ: СИСТЕМНІ НАЛАШТУВАННЯ ===
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS system_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        # Дефолт: Сайт увімкнено (1)
+        await db.execute("INSERT OR IGNORE INTO system_config (key, value) VALUES ('hoe_site_enabled', '1')")
+
         # === 2. ПЕРЕВІРКА І ВИПРАВЛЕННЯ ТІЛЬКИ ТАБЛИЦЬ ПІДТРИМКИ ===
         # Перевіряємо, чи існує таблиця support_messages і чи є в ній колонка ticket_id
         try:
@@ -268,6 +278,22 @@ async def get_off_hours_for_date(region, queue, date_str):
         async with db.execute("SELECT off_hours FROM daily_stats WHERE region = ? AND queue = ? AND date = ?", (region, queue, date_str)) as cur:
             row = await cur.fetchone()
             return row[0] if row else None
+
+
+# === НОВІ ФУНКЦІЇ ДЛЯ КОНФІГУРАЦІЇ ===
+
+async def set_system_config(key, value):
+    """Зберігає системне налаштування."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("INSERT INTO system_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+        await db.commit()
+
+async def get_system_config(key, default=None):
+    """Отримує системне налаштування."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT value FROM system_config WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else default
 
 
 # ========== НОВА СИСТЕМА ПІДТРИМКИ ==========

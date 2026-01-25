@@ -95,8 +95,9 @@ async def check_updates(bot):
                     if today_sch:
                         await db.save_stats(region, queue, today, api.calculate_off_hours(today_sch))
                         
-                        current_norm = api.parse_intervals(today_sch)
-                        cached_norm = api.parse_intervals(cached_today) if cached_today else None
+                        # ВАЖЛИВО: target_status=2 означає, що ми реагуємо на зміни ГАРАНТОВАНИХ відключень
+                        current_norm = api.parse_intervals(today_sch, target_status=2)
+                        cached_norm = api.parse_intervals(cached_today, target_status=2) if cached_today else None
 
                         if cached_norm is not None and json.dumps(current_norm, sort_keys=True) != json.dumps(cached_norm, sort_keys=True):
                              txt_b = api.format_message(today_sch, queue, today, False, "blackout")
@@ -127,8 +128,8 @@ async def check_updates(bot):
                             )
                     
                     elif (tom_sch is not None) and (cached_tom is not None):
-                        tom_norm = api.parse_intervals(tom_sch)
-                        cached_tom_norm = api.parse_intervals(cached_tom)
+                        tom_norm = api.parse_intervals(tom_sch, target_status=2)
+                        cached_tom_norm = api.parse_intervals(cached_tom, target_status=2)
 
                         if json.dumps(tom_norm, sort_keys=True) != json.dumps(cached_tom_norm, sort_keys=True):
                             await db.save_stats(region, queue, tomorrow, api.calculate_off_hours(tom_sch))
@@ -196,8 +197,6 @@ async def check_alerts(bot):
                     header = f"☀️ **Добрий ранок! Графік на сьогодні:**\n"
 
                     # Відправляємо тим, у кого увімкнені ранкові сповіщення (використовуємо notify_changes як прапорець підписки на важливе)
-                    # Або можна вважати це базовим функціоналом для всіх.
-                    # Тут налаштовано для всіх, хто не вимкнув notify_changes (або можна створити нову колонку в БД)
                     await smart_broadcast(
                         bot, region, queue,
                         header + txt_b.split('\n', 1)[1], # Прибираємо старий заголовок, ставимо новий
@@ -221,11 +220,13 @@ async def check_alerts(bot):
                 
                 if not today_sch: continue
                 
-                today_intervals = api.parse_intervals(today_sch)
-                tom_intervals = api.parse_intervals(tom_sch) if tom_sch else []
+                # ВАЖЛИВО: Отримуємо ГАРАНТОВАНІ відключення (status=2)
+                today_intervals = api.parse_intervals(today_sch, target_status=2)
+                tom_intervals = api.parse_intervals(tom_sch, target_status=2) if tom_sch else []
 
+                # --- 1. ПЕРЕВІРКА ГАРАНТОВАНИХ (Status 2) ---
                 for start, end in today_intervals:
-                    # 1. СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ
+                    # А) СПОВІЩЕННЯ ПРО ВІДКЛЮЧЕННЯ
                     if start != "00:00":
                         for mins, check_time in check_moments.items():
                             if check_time == start:
@@ -246,7 +247,7 @@ async def check_alerts(bot):
                                     )
                                     alert_history.add(alert_id)
 
-                    # 2. СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ
+                    # Б) СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ
                     if end != "24:00":
                         for mins, check_time in check_moments.items():
                             if check_time == end:
@@ -260,7 +261,26 @@ async def check_alerts(bot):
                                     )
                                     alert_history.add(alert_id)
 
-                # Стик днів
+                # --- 2. МОЖЛИВІ (3) - СПОВІЩЕННЯ ПРО ПОЧАТОК ---
+                # Отримуємо інтервали можливих відключень
+                intervals_possible = api.parse_intervals(today_sch, target_status=3)
+                for start, end in intervals_possible:
+                    if start != "00:00":
+                        for mins, check_time in check_moments.items():
+                            if check_time == start:
+                                alert_id = f"{key}_{start}_poss_pre_{mins}"
+                                if alert_id not in alert_history:
+                                    msg = f"⚠️ **Увага! Через {mins} хв можливе відключення.**\nСіра зона графіку (до {end})."
+                                    
+                                    # Використовуємо налаштування notify_outage (або можна створити окреме)
+                                    # Тут поки що прив'язано до сповіщень про відключення
+                                    await smart_broadcast(
+                                        bot, key[0], key[1], msg, msg,
+                                        lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
+                                    )
+                                    alert_history.add(alert_id)
+
+                # --- 3. Стик днів (23:XX -> 00:00) ---
                 if tom_intervals and tom_intervals[0][0] == "00:00":
                     start_tom, end_tom = tom_intervals[0]
                     for mins, check_time in check_moments.items():
@@ -276,7 +296,7 @@ async def check_alerts(bot):
                                  )
                                  alert_history.add(alert_id)
 
-                # 3. СПОВІЩЕННЯ В МОМЕНТ ВКЛЮЧЕННЯ
+                # --- 4. СПОВІЩЕННЯ В МОМЕНТ ВКЛЮЧЕННЯ (Тільки після гарантованих) ---
                 for start, end in today_intervals:
                     if curr_time == end and end != "24:00":
                         alert_id = f"{key}_{end}_on"

@@ -9,8 +9,10 @@ from aiogram.types import KeyboardButton, InlineKeyboardButton
 import database as db
 import api_utils as api
 import scheduler
+from config import ADMIN_IDS # Імпортуємо список адмінів
 
-ADMIN_ID = 723550550  # Ваш ID адміна
+# Для сумісності з вашим старим кодом, якщо ADMIN_ID використовується як число
+ADMIN_ID = ADMIN_IDS[0] if isinstance(ADMIN_IDS, list) and ADMIN_IDS else 723550550 
 
 router = Router()
 
@@ -27,7 +29,7 @@ def get_main_keyboard(user_id=None):
     kb.row(KeyboardButton(text="💬 Підтримка"))
     
     # Додаємо кнопку тільки Адміну
-    if user_id == ADMIN_ID:
+    if user_id == ADMIN_ID or (isinstance(ADMIN_IDS, list) and user_id in ADMIN_IDS):
         kb.row(KeyboardButton(text="👨‍💼 Адмін-панель"))
         
     return kb.as_markup(resize_keyboard=True)
@@ -562,6 +564,13 @@ async def admin_menu(message: types.Message):
         support_text += f" ({unread_count})"
     
     kb.row(KeyboardButton(text=support_text), KeyboardButton(text="👥 Користувачів"))
+    
+    # === НОВА КНОПКА ДЛЯ КЕРУВАННЯ САЙТОМ ===
+    # Отримуємо стан сайту, щоб показати актуальну іконку в меню (опціонально)
+    # Але оскільки меню статичне, краще зробити це через Inline в окремому повідомленні.
+    # Тут залишаємо як є, але додамо обробник.
+    
+    kb.row(KeyboardButton(text="⚙️ Керування джерелами"))
     kb.row(KeyboardButton(text="🏠 Меню"))
     
     await message.answer(
@@ -569,6 +578,38 @@ async def admin_menu(message: types.Message):
         reply_markup=kb.as_markup(resize_keyboard=True), 
         parse_mode="Markdown"
     )
+
+# === НОВЕ: КЕРУВАННЯ ДЖЕРЕЛАМИ ===
+@router.message(F.text == "⚙️ Керування джерелами")
+async def admin_sources_control(message: types.Message):
+    if message.from_user.id != ADMIN_ID: 
+        return
+
+    # Отримуємо поточний стан
+    site_enabled = await db.get_system_config('hoe_site_enabled', '1')
+    status_icon = "✅" if site_enabled == '1' else "❌"
+    
+    kb = InlineKeyboardBuilder()
+    kb.add(InlineKeyboardButton(f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
+    
+    await message.answer("🛠 **Керування джерелами даних**\nНатисніть, щоб увімкнути/вимкнути:", reply_markup=kb.as_markup())
+
+@router.callback_query(F.data == "toggle_hoe_site")
+async def toggle_hoe_site_callback(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID: return
+
+    current = await db.get_system_config('hoe_site_enabled', '1')
+    new_value = '0' if current == '1' else '1'
+    await db.set_system_config('hoe_site_enabled', new_value)
+    
+    status_icon = "✅" if new_value == '1' else "❌"
+    status_text = "ВІМКНЕНО" if new_value == '1' else "ВИМКНЕНО"
+    
+    kb = InlineKeyboardBuilder()
+    kb.add(InlineKeyboardButton(f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
+    
+    await call.message.edit_reply_markup(reply_markup=kb.as_markup())
+    await call.answer(f"Парсинг сайту {status_text}")
 
 
 @router.message(F.text == "📨 Розсилка всім")
