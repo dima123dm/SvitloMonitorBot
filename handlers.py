@@ -566,10 +566,6 @@ async def admin_menu(message: types.Message):
     kb.row(KeyboardButton(text=support_text), KeyboardButton(text="👥 Користувачів"))
     
     # === НОВА КНОПКА ДЛЯ КЕРУВАННЯ САЙТОМ ===
-    # Отримуємо стан сайту, щоб показати актуальну іконку в меню (опціонально)
-    # Але оскільки меню статичне, краще зробити це через Inline в окремому повідомленні.
-    # Тут залишаємо як є, але додамо обробник.
-    
     kb.row(KeyboardButton(text="⚙️ Керування джерелами"))
     kb.row(KeyboardButton(text="🏠 Меню"))
     
@@ -590,7 +586,8 @@ async def admin_sources_control(message: types.Message):
     status_icon = "✅" if site_enabled == '1' else "❌"
     
     kb = InlineKeyboardBuilder()
-    kb.add(InlineKeyboardButton(f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
+    # === ВИПРАВЛЕННЯ: Додано "text=" ===
+    kb.add(InlineKeyboardButton(text=f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
     
     await message.answer("🛠 **Керування джерелами даних**\nНатисніть, щоб увімкнути/вимкнути:", reply_markup=kb.as_markup())
 
@@ -606,7 +603,8 @@ async def toggle_hoe_site_callback(call: types.CallbackQuery):
     status_text = "ВІМКНЕНО" if new_value == '1' else "ВИМКНЕНО"
     
     kb = InlineKeyboardBuilder()
-    kb.add(InlineKeyboardButton(f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
+    # === ВИПРАВЛЕННЯ: Додано "text=" ===
+    kb.add(InlineKeyboardButton(text=f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
     
     await call.message.edit_reply_markup(reply_markup=kb.as_markup())
     await call.answer(f"Парсинг сайту {status_text}")
