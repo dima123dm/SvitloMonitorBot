@@ -11,8 +11,9 @@ schedules_cache = {}
 # Історія сповіщень
 alert_history = set()
 
-# --- НОВЕ: Флаг, чи був відправлений графік сьогодні ---
-schedule_sent_today = False
+# --- ВИПРАВЛЕНО: Замість однієї змінної використовуємо словник ---
+# Формат: { (region, queue): "2024-01-26" }
+sent_notifications = {}
 
 async def smart_broadcast(bot, region, queue, text_blackout, text_light, filter_func):
     """
@@ -56,7 +57,7 @@ def find_next_outage(current_time_str, today_intervals, tomorrow_intervals):
 
 async def check_updates(bot):
     """Перевіряє оновлення графіків на сайті."""
-    global schedule_sent_today  # Використовуємо глобальну змінну
+    # global schedule_sent_today # Більше не потрібно
     first_run = True
 
     while True:
@@ -111,8 +112,8 @@ async def check_updates(bot):
                                     header + txt_l.split('\n', 1)[1],
                                     lambda s: s['notify_changes'] == 1
                                 )
-                                # Якщо ми відправили оновлення, то ранкове повідомлення вже не потрібне
-                                schedule_sent_today = True
+                                # Запам'ятовуємо, що для цієї черги вже було відправлено актуальний графік
+                                sent_notifications[(region, queue)] = today
 
                     # --- 2. ПЕРЕВІРКА ЗАВТРА ---
                     if (tom_sch is not None) and (cached_tom is None):
@@ -165,7 +166,7 @@ async def check_updates(bot):
 
 async def check_alerts(bot):
     """Щохвилинна перевірка для сповіщень."""
-    global schedule_sent_today  # Використовуємо глобальну змінну
+    # global schedule_sent_today # Більше не потрібно
 
     while True:
         try:
@@ -176,15 +177,21 @@ async def check_alerts(bot):
             # --- СБРОС У 00:00 ---
             if curr_time == "00:00": 
                 alert_history.clear()
-                schedule_sent_today = False # Скидаємо прапорець на новий день
+                # Очищаємо історію відправок на новий день (опціонально, бо ми перевіряємо дату)
+                # sent_notifications.clear() 
 
             # --- НОВЕ: РАНКОВЕ ОПОВІЩЕННЯ (06:00) ---
-            if curr_time == "06:00" and not schedule_sent_today:
-                print("☀️ Відправляю ранкове зведення...")
+            if curr_time == "06:00":
+                print("☀️ Перевірка ранкового зведення...")
                 # Проходимо по всіх відомих чергах в кеші
                 for (region, queue), data in schedules_cache.items():
                     # Переконуємось, що дані свіжі
                     if data.get("date") != today_str: continue
+
+                    # Перевіряємо, чи ми вже відправляли графік для цієї конкретної черги сьогодні
+                    last_sent = sent_notifications.get((region, queue))
+                    if last_sent == today_str:
+                        continue # Вже було оновлення вночі, пропускаємо
 
                     today_sch = data.get("today")
                     if not today_sch: continue
@@ -196,15 +203,15 @@ async def check_alerts(bot):
                     # Заголовок
                     header = f"☀️ **Добрий ранок! Графік на сьогодні:**\n"
 
-                    # Відправляємо тим, у кого увімкнені ранкові сповіщення (використовуємо notify_changes як прапорець підписки на важливе)
                     await smart_broadcast(
                         bot, region, queue,
-                        header + txt_b.split('\n', 1)[1], # Прибираємо старий заголовок, ставимо новий
+                        header + txt_b.split('\n', 1)[1], 
                         header + txt_l.split('\n', 1)[1],
-                        lambda s: s['notify_changes'] == 1 # Або True для всіх
+                        lambda s: s['notify_changes'] == 1 
                     )
-                
-                schedule_sent_today = True # Запам'ятовуємо, що вже відправили
+                    
+                    # Запам'ятовуємо, що відправили
+                    sent_notifications[(region, queue)] = today_str
 
             # Часові точки для перевірки
             check_moments = {
