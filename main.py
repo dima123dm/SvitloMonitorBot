@@ -26,6 +26,10 @@ async def main():
     # 4. Запуск фонових задач (передаємо бота, щоб вони могли слати повідомлення)
     asyncio.create_task(scheduler.check_updates(bot))
     asyncio.create_task(scheduler.check_alerts(bot))
+    
+    # === НОВЕ: ЗАПУСК БЕКАПЕРА ===
+    asyncio.create_task(scheduler.auto_backup(bot))
+    
     print("✅ Фонові процеси запущені")
 
     # 5. Старт бота

@@ -2,9 +2,10 @@
 import asyncio
 import json
 from datetime import datetime, timedelta
+from aiogram.types import FSInputFile  # <-- Для відправки бекапу
 import api_utils as api
 import database as db
-from config import UPDATE_INTERVAL
+from config import UPDATE_INTERVAL, ADMIN_IDS, DB_NAME # <-- Імпорт налаштувань
 
 # Кеш в пам'яті
 schedules_cache = {} 
@@ -325,3 +326,43 @@ async def check_alerts(bot):
              print(f"Alert Error: {e}")
         
         await asyncio.sleep(60 - datetime.now().second)
+
+# === НОВЕ: ФОНОВА ЗАДАЧА ДЛЯ БЕКАПУ ===
+async def auto_backup(bot):
+    """Щодня о 03:00 відправляє базу даних адміну."""
+    print("💾 Система бекапів запущена. Чекаю 03:00...")
+    while True:
+        try:
+            now = datetime.now()
+            # Встановлюємо час на 03:00 сьогодні
+            target_time = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            
+            # Якщо 03:00 вже минуло, плануємо на завтра
+            if now >= target_time:
+                target_time += timedelta(days=1)
+            
+            # Рахуємо скільки спати
+            wait_seconds = (target_time - now).total_seconds()
+            
+            # Спимо до 03:00
+            await asyncio.sleep(wait_seconds)
+            
+            # --- ВІДПРАВКА БЕКАПУ ---
+            # Беремо першого адміна зі списку, якщо це список, або сам ID, якщо це число
+            admin_id = ADMIN_IDS[0] if isinstance(ADMIN_IDS, list) and ADMIN_IDS else ADMIN_IDS
+            
+            db_file = FSInputFile(DB_NAME)
+            caption = f"📦 **Автоматичний бекап бази даних**\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            try:
+                await bot.send_document(admin_id, db_file, caption=caption, parse_mode="Markdown")
+                print("✅ Бекап успішно відправлено!")
+            except Exception as e:
+                print(f"Помилка відправки файлу: {e}")
+            
+            # Спимо трохи, щоб не відправити двічі в ту саму секунду (хоча timedelta захищає)
+            await asyncio.sleep(60)
+            
+        except Exception as e:
+            print(f"Backup Error: {e}")
+            await asyncio.sleep(300) # Якщо помилка, пробуємо через 5 хв
