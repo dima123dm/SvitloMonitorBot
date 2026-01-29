@@ -2,18 +2,17 @@
 import asyncio
 import json
 from datetime import datetime, timedelta
-from aiogram.types import FSInputFile  # <-- Для відправки бекапу
+from aiogram.types import FSInputFile
 import api_utils as api
 import database as db
-from config import UPDATE_INTERVAL, ADMIN_IDS, DB_NAME # <-- Імпорт налаштувань
+from config import UPDATE_INTERVAL, ADMIN_IDS, DB_NAME
 
 # Кеш в пам'яті
 schedules_cache = {} 
 # Історія сповіщень
 alert_history = set()
 
-# --- ВИПРАВЛЕНО: Замість однієї змінної використовуємо словник ---
-# Формат: { (region, queue): "2024-01-26" }
+# Словник відправок: { (region, queue): "2024-01-26" }
 sent_notifications = {}
 
 async def smart_broadcast(bot, region, queue, text_blackout, text_light, filter_func):
@@ -196,6 +195,22 @@ async def check_alerts(bot):
 
                     today_sch = data.get("today")
                     if not today_sch: continue
+
+                    # === НОВА ЛОГІКА: УНИКНЕННЯ СПАМУ ===
+                    # Отримуємо статистику
+                    today_off = api.calculate_off_hours(today_sch)
+                    
+                    # Отримуємо вчорашню дату і статистику
+                    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+                    yesterday_off = await db.get_off_hours_for_date(region, queue, yesterday)
+                    
+                    # Якщо ВЧОРА було 0 годин відключень, і СЬОГОДНІ теж 0 - пропускаємо
+                    # (Щоб не писати кожен день "Світла не вимикають")
+                    if today_off == 0 and yesterday_off == 0:
+                        # Але ставимо галочку, що ми "обробили" цю чергу, щоб не повертатися
+                        sent_notifications[(region, queue)] = today_str
+                        continue
+                    # ===================================
 
                     # Формуємо повідомлення
                     txt_b = api.format_message(today_sch, queue, today_str, False, "blackout")

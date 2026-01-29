@@ -11,7 +11,7 @@ import database as db
 # URL офіційного сайту
 HOE_SITE_URL = "https://hoe.com.ua/page/pogodinni-vidkljuchennja"
 
-# Словник для конвертації місяців (для парсингу сайту)
+# Словник для конвертації місяців
 UA_MONTHS = {
     'січня': '01', 'лютого': '02', 'березня': '03', 'квітня': '04',
     'травня': '05', 'червня': '06', 'липня': '07', 'серпня': '08',
@@ -19,16 +19,13 @@ UA_MONTHS = {
 }
 
 async def fetch_api_data():
-    """
-    ГОЛОВНА ФУНКЦІЯ ОТРИМАННЯ ДАНИХ.
-    """
+    """ГОЛОВНА ФУНКЦІЯ ОТРИМАННЯ ДАНИХ."""
     api_data = await fetch_original_api_source()
     is_site_enabled = await db.get_system_config('hoe_site_enabled', '1')
 
     if is_site_enabled == '1':
         try:
             site_data = await fetch_hoe_site()
-            
             if site_data and api_data:
                 found = False
                 for region in api_data.get('regions', []):
@@ -36,19 +33,17 @@ async def fetch_api_data():
                         region['schedule'] = site_data['regions'][0]['schedule']
                         found = True
                         break
-                
                 if not found:
                     api_data.setdefault('regions', []).append(site_data['regions'][0])
-                    
             elif site_data and not api_data:
                 return site_data
-
         except Exception as e:
             print(f"⚠️ Помилка інтеграції сайту HOE: {e}")
 
     return api_data
 
 async def fetch_original_api_source():
+    """Робить запит до резервного API."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(API_URL, timeout=15) as response:
@@ -58,11 +53,8 @@ async def fetch_original_api_source():
         print(f"Помилка API (Backup): {e}")
     return None
 
-# ==========================================
-# === ПАРСЕР САЙТУ ХМЕЛЬНИЦЬКОБЛЕНЕРГО ===
-# ==========================================
-
 async def fetch_hoe_site():
+    """Завантажує HTML сайту і парсить черги."""
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(HOE_SITE_URL, timeout=10) as response:
@@ -78,7 +70,6 @@ async def fetch_hoe_site():
         
         for element in post_div.children:
             text = element.get_text(strip=True) if element.name else ""
-            
             date_match = re.search(r'(\d{1,2})\s+([а-яієї]+)', text.lower())
             if date_match:
                 day, month_name = date_match.groups()
@@ -96,14 +87,7 @@ async def fetch_hoe_site():
 
         if not schedule_map: return None
 
-        return {
-            "regions": [
-                {
-                    "name_ua": "Хмельницька",
-                    "schedule": schedule_map
-                }
-            ]
-        }
+        return {"regions": [{"name_ua": "Хмельницька", "schedule": schedule_map}]}
     except Exception as e:
         print(f"Site Parser Error: {e}")
         return None
@@ -111,27 +95,19 @@ async def fetch_hoe_site():
 def parse_queue_line(text, date_str, schedule_map):
     queue_match = re.search(r"(\d\.\d)", text)
     if not queue_match: return
-
     queue_id = queue_match.group(1)
     times = re.findall(r"(\d{2}:\d{2})\s*(?:до|-|–|—)\s*(\d{2}:\d{2})", text)
-    
     formatted_intervals = []
     for start, end in times:
         formatted_intervals.append(f"{start}-{end}")
-
     if queue_id not in schedule_map:
         schedule_map[queue_id] = {}
-    
     if date_str in schedule_map[queue_id]:
         return
-
     schedule_map[queue_id][date_str] = formatted_intervals
 
-# ==========================================
-# === ДОПОМІЖНІ ФУНКЦІЇ ===
-# ==========================================
-
 def calculate_off_hours(schedule_data):
+    """Рахує суму годин БЕЗ світла (гарантовані, статус 2)."""
     if not schedule_data: return 0.0
     
     if isinstance(schedule_data, list):
@@ -152,7 +128,6 @@ def calculate_off_hours(schedule_data):
     elif isinstance(schedule_data, dict):
         count = sum(1 for k, v in schedule_data.items() if k != "24:00" and v == 2)
         return count * 0.5
-    
     return 0
 
 def calculate_possible_hours(schedule_data):
@@ -162,14 +137,19 @@ def calculate_possible_hours(schedule_data):
     return 0
 
 def calculate_on_hours(schedule_data):
-    if not schedule_data: return 0
+    """Рахує суму годин ЗІ світлом."""
+    if not schedule_data: return 24.0 # Якщо даних немає (пусто), вважаємо що світло є
+    
     if isinstance(schedule_data, list):
         off = calculate_off_hours(schedule_data)
         return max(0, 24.0 - off)
     elif isinstance(schedule_data, dict):
         count = sum(1 for k, v in schedule_data.items() if k != "24:00" and v == 1)
-        return count * 0.5
-    return 0
+        # Якщо немає явних 1, але і немає 2/3, треба рахувати все інше як світло
+        off = calculate_off_hours(schedule_data)
+        poss = calculate_possible_hours(schedule_data)
+        return max(0, 24.0 - off - poss)
+    return 24.0
 
 def parse_intervals(schedule_data, target_status=None, inverse=False):
     if not schedule_data: return []
@@ -194,7 +174,7 @@ def parse_intervals(schedule_data, target_status=None, inverse=False):
 
         for t in times:
             val = schedule_data.get(t)
-            
+            is_active = False
             if inverse:
                 is_active = (val == 1)
             else:
@@ -214,9 +194,7 @@ def parse_intervals(schedule_data, target_status=None, inverse=False):
                 
         if in_interval and current_start:
             intervals.append((current_start, "24:00"))
-            
         return intervals
-    
     return []
 
 def invert_schedule_for_site(blackout_intervals):
@@ -227,13 +205,11 @@ def invert_schedule_for_site(blackout_intervals):
             start_s, end_s = interval.split('-')
             sh, sm = map(int, start_s.split(':'))
             start_min = sh * 60 + sm
-            
             if end_s == "24:00": end_min = 1440
             else:
                 eh, em = map(int, end_s.split(':'))
                 end_min = eh * 60 + em
                 if end_min == 0 and start_min > 0: end_min = 1440
-            
             parsed_blackouts.append((start_min, end_min))
         except: continue
             
@@ -257,98 +233,78 @@ def invert_schedule_for_site(blackout_intervals):
     return result
 
 def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, display_mode="blackout"):
-    """
-    Створює текст повідомлення.
-    ОНОВЛЕНО: У режимі 'light' приховуються гарантовані відключення.
-    """
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     days = {"Monday": "Понеділок", "Tuesday": "Вівторок", "Wednesday": "Середа",
             "Thursday": "Четвер", "Friday": "П'ятниця", "Saturday": "Субота", "Sunday": "Неділя"}
     day_name = days.get(dt.strftime("%A"), dt.strftime("%A"))
     date_nice = dt.strftime('%d.%m')
 
+    # Якщо даних немає взагалі - повертаємо статус "Оновлюється / Не оприлюднено"
     if schedule_json is None:
         if is_tomorrow:
             return f"🕒 **Графік на завтра ({date_nice}) ще не оприлюднено.**"
         else:
             return "⏳ **Дані оновлюються...**"
 
-    # --- ЗБИРАЄМО ПОДІЇ НА ТАЙМЛАЙН ---
     timeline = []
+    confirmed = parse_intervals(schedule_json, target_status=2)
+    for s, e in confirmed: timeline.append((s, e, 2))
 
-    # 1. Гарантовані (2)
-    # [ЗМІНА] Додаємо їх ТІЛЬКИ якщо режим НЕ 'light'
-    if display_mode != "light":
-        confirmed = parse_intervals(schedule_json, target_status=2)
-        for s, e in confirmed: timeline.append((s, e, 2))
-
-    # 2. Можливі (3) - Завжди показуємо (щоб було видно сірі зони)
     if isinstance(schedule_json, dict):
         possible = parse_intervals(schedule_json, target_status=3)
         for s, e in possible: timeline.append((s, e, 3))
 
-    # 3. Світло (1) - Тільки для режиму "Light"
     if display_mode == "light":
         if isinstance(schedule_json, dict):
-            # API: Беремо статус 1
             light_ints = parse_intervals(schedule_json, target_status=1, inverse=False)
         else:
-            # Сайт: Інвертуємо гарантовані відключення
             raw_blackouts = parse_intervals(schedule_json, target_status=2, inverse=False)
             str_blackouts = [f"{s}-{e}" for s, e in raw_blackouts]
-            light_ints = invert_schedule_for_site(str_blackouts)
-            
+            light_tuples = invert_schedule_for_site(str_blackouts)
+            light_ints = light_tuples
         for s, e in light_ints: timeline.append((s, e, 1))
 
-    # Сортуємо хронологічно
     timeline.sort(key=lambda x: x[0])
 
-    # ЗАГОЛОВОК
     when = "на завтра" if is_tomorrow else "на сьогодні"
     emoji_header = "💡"
     
+    # Визначаємо тексти для порожніх випадків
     if display_mode == "light":
         header_text = f"Графік наявності світла"
-        empty_text = "😔 **Світла не передбачено.** (Повний блекаут)"
+        emoji_main = "🟢"
+        # "Поганий" текст (якщо timeline пустий і total_off > 0 - це повний блекаут)
+        empty_text_bad = "😔 **Світла не передбачено.** (Повний блекаут)" 
+        # "Хороший" текст (якщо timeline пустий і total_off == 0 - це зелений день)
+        empty_text_good = "✨ **Світло є весь день!** (Відключень не передбачено)"
     else:
         header_text = f"Графік відключень"
-        empty_text = "✅ **Відключень не передбачено.**"
+        emoji_main = "🕒"
+        empty_text_good = "✅ **Відключень не передбачено.**"
+        empty_text_bad = "✅ **Відключень не передбачено.**" # Для режиму блекауту порожній список завжди добре
 
     header = f"{emoji_header} **{header_text} {when}, {date_nice} ({day_name})**"
 
-    if is_tomorrow and not timeline and display_mode == "blackout" and isinstance(schedule_json, dict):
-         return f"🕒 **Графік на завтра ({date_nice}) ще не оприлюднено.**\n(Або відключень не планується)"
+    # Рахуємо години для перевірки
+    total_off = calculate_off_hours(schedule_json)
+    total_possible = calculate_possible_hours(schedule_json)
+    total_on = calculate_on_hours(schedule_json)
 
-    # ТІЛО ПОВІДОМЛЕННЯ
+    # Якщо список інтервалів порожній
     if not timeline:
-        total_off = calculate_off_hours(schedule_json)
-        # Логіка для пустих списків
-        if display_mode == "blackout" and total_off == 0:
-            body = empty_text
-        elif display_mode == "light" and calculate_on_hours(schedule_json) == 0:
-             body = empty_text # Немає світла
-        elif display_mode == "light":
-             # Якщо список пустий в light mode, але світло є (наприклад, 24 години), треба це обробити
-             # Наш код вище має додати інтервал 00-24, якщо відключень немає.
-             # Але якщо щось пішло не так:
-             body = "🟢 **Світло є весь день!**" 
+        # ПЕРЕВІРКА: Якщо годин відключень 0 -> Значить все добре
+        if total_off == 0:
+            body = empty_text_good
         else:
-             body = empty_text
+            # Якщо години відключення є, але timeline пустий (дивний збіг) або режим "light" без світла
+            body = empty_text_bad
     else:
         lines = []
         for start, end, type_code in timeline:
-            if type_code == 1: # Світло
-                emoji = "🟢"
-                suffix = ""
-            elif type_code == 2: # Гарантоване
-                emoji = "🕒"
-                suffix = ""
-            elif type_code == 3: # Можливе
-                emoji = "⚠️"
-                suffix = " _(Можливе)_"
-            else:
-                emoji = "❓"
-                suffix = ""
+            if type_code == 1: emoji = "🟢"; suffix = ""
+            elif type_code == 2: emoji = "🕒"; suffix = ""
+            elif type_code == 3: emoji = "⚠️"; suffix = " _(Можливе)_"
+            else: emoji = "❓"; suffix = ""
 
             try:
                 t1 = datetime.strptime(start, "%H:%M")
@@ -357,18 +313,11 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
                 else:
                     t2 = datetime.strptime(end, "%H:%M")
                     diff = (t2 - t1).seconds / 3600
-                
                 diff_str = f"{int(diff)}" if diff.is_integer() else f"{diff:.1f}"
                 lines.append(f"{emoji} **{start} — {end}**{suffix} _({diff_str} год)_")
             except:
                 lines.append(f"{emoji} **{start} — {end}**{suffix}")
-                
         body = "\n".join(lines)
-
-    # СТАТИСТИКА
-    total_off = calculate_off_hours(schedule_json)
-    total_possible = calculate_possible_hours(schedule_json)
-    total_on = calculate_on_hours(schedule_json)
 
     stats_text = ""
     if display_mode == "light":
@@ -387,5 +336,4 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
         f"──────────────────\n"
         f"{stats_text}"
     )
-
     return text
