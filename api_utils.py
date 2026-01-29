@@ -146,6 +146,7 @@ def calculate_on_hours(schedule_data):
     elif isinstance(schedule_data, dict):
         count = sum(1 for k, v in schedule_data.items() if k != "24:00" and v == 1)
         # Якщо немає явних 1, але і немає 2/3, треба рахувати все інше як світло
+        # Але для простоти, якщо це API зі статусами, краще відштовхуватися від зворотного
         off = calculate_off_hours(schedule_data)
         poss = calculate_possible_hours(schedule_data)
         return max(0, 24.0 - off - poss)
@@ -239,7 +240,6 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
     day_name = days.get(dt.strftime("%A"), dt.strftime("%A"))
     date_nice = dt.strftime('%d.%m')
 
-    # Якщо даних немає взагалі - повертаємо статус "Оновлюється / Не оприлюднено"
     if schedule_json is None:
         if is_tomorrow:
             return f"🕒 **Графік на завтра ({date_nice}) ще не оприлюднено.**"
@@ -247,8 +247,11 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
             return "⏳ **Дані оновлюються...**"
 
     timeline = []
-    confirmed = parse_intervals(schedule_json, target_status=2)
-    for s, e in confirmed: timeline.append((s, e, 2))
+    
+    # === ВИПРАВЛЕННЯ 1: Якщо режим "light", НЕ показуємо години відключень ===
+    if display_mode != "light":
+        confirmed = parse_intervals(schedule_json, target_status=2)
+        for s, e in confirmed: timeline.append((s, e, 2))
 
     if isinstance(schedule_json, dict):
         possible = parse_intervals(schedule_json, target_status=3)
@@ -269,34 +272,33 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
     when = "на завтра" if is_tomorrow else "на сьогодні"
     emoji_header = "💡"
     
-    # Визначаємо тексти для порожніх випадків
     if display_mode == "light":
         header_text = f"Графік наявності світла"
         emoji_main = "🟢"
-        # "Поганий" текст (якщо timeline пустий і total_off > 0 - це повний блекаут)
         empty_text_bad = "😔 **Світла не передбачено.** (Повний блекаут)" 
-        # "Хороший" текст (якщо timeline пустий і total_off == 0 - це зелений день)
         empty_text_good = "✨ **Світло є весь день!** (Відключень не передбачено)"
     else:
         header_text = f"Графік відключень"
         emoji_main = "🕒"
         empty_text_good = "✅ **Відключень не передбачено.**"
-        empty_text_bad = "✅ **Відключень не передбачено.**" # Для режиму блекауту порожній список завжди добре
+        empty_text_bad = "✅ **Відключень не передбачено.**" 
 
     header = f"{emoji_header} **{header_text} {when}, {date_nice} ({day_name})**"
 
-    # Рахуємо години для перевірки
+    # СТАТИСТИКА
     total_off = calculate_off_hours(schedule_json)
     total_possible = calculate_possible_hours(schedule_json)
     total_on = calculate_on_hours(schedule_json)
 
-    # Якщо список інтервалів порожній
+    # === ВИПРАВЛЕННЯ 2: Захист для "завтра" ===
+    # Якщо це завтра і відключень 0 - вважаємо, що графік ще не дали
+    if is_tomorrow and total_off == 0:
+         return f"🕒 **Графік на завтра ({date_nice}) ще не оприлюднено.**"
+
     if not timeline:
-        # ПЕРЕВІРКА: Якщо годин відключень 0 -> Значить все добре
         if total_off == 0:
             body = empty_text_good
         else:
-            # Якщо години відключення є, але timeline пустий (дивний збіг) або режим "light" без світла
             body = empty_text_bad
     else:
         lines = []
