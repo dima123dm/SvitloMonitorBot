@@ -100,8 +100,8 @@ async def check_updates(bot):
                         current_norm = api.parse_intervals(today_sch, target_status=2)
                         cached_norm = api.parse_intervals(cached_today, target_status=2) if cached_today else None
 
-                        print(f"[DEBUG] {region}/{queue} | cached_today={cached_today} | today_sch={today_sch}")
-                        print(f"[DEBUG] cached_norm={cached_norm} | current_norm={current_norm}")
+                        # print(f"[DEBUG] {region}/{queue} | cached_today={cached_today} | today_sch={today_sch}")
+                        # print(f"[DEBUG] cached_norm={cached_norm} | current_norm={current_norm}")
 
                         if cached_norm is not None and json.dumps(current_norm, sort_keys=True) != json.dumps(cached_norm, sort_keys=True):
                              txt_b = api.format_message(today_sch, queue, today, False, "blackout")
