@@ -100,6 +100,9 @@ async def check_updates(bot):
                         current_norm = api.parse_intervals(today_sch, target_status=2)
                         cached_norm = api.parse_intervals(cached_today, target_status=2) if cached_today else None
 
+                        print(f"[DEBUG] {region}/{queue} | cached_today={cached_today} | today_sch={today_sch}")
+                        print(f"[DEBUG] cached_norm={cached_norm} | current_norm={current_norm}")
+
                         if cached_norm is not None and json.dumps(current_norm, sort_keys=True) != json.dumps(cached_norm, sort_keys=True):
                              txt_b = api.format_message(today_sch, queue, today, False, "blackout")
                              txt_l = api.format_message(today_sch, queue, today, False, "light")
@@ -148,7 +151,15 @@ async def check_updates(bot):
                                         lambda s: s['notify_changes'] == 1
                                     )
 
-                    schedules_cache[(region, queue)] = {"date": today, "today": today_sch, "tomorrow": tom_sch}
+                    old_cache = schedules_cache.get((region, queue), {})
+                    # Зберігаємо старий кеш тільки якщо вже були дані на СЬОГОДНІ (захист від збою API серед дня)
+                    # Якщо новий день — None є нормою, не підміняємо
+                    same_day = old_cache.get("date") == today
+                    schedules_cache[(region, queue)] = {
+                        "date": today,
+                        "today": (old_cache.get("today") if same_day and today_sch is None else today_sch),
+                        "tomorrow": (old_cache.get("tomorrow") if same_day and tom_sch is None else tom_sch),
+                    }
 
                 current_date = datetime.now()
                 for i in range(7):
