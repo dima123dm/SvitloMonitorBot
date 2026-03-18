@@ -850,7 +850,14 @@ async def show_my_groups_menu(message: types.Message, user_id):
     kb.row(InlineKeyboardButton(text="🔄 Оновити список", callback_data="menu_my_groups"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
     
-    await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+    try:
+        await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+    except Exception as e:
+        if "message is not modified" in str(e):
+            # Ігноруємо якщо нічого не змінилося
+            pass
+        else:
+            raise e
 
 
 # --- ОБРОБНИКИ НАВІГАЦІЇ ТА ДІЙ ---
@@ -881,6 +888,7 @@ async def nav_mode(callback: types.CallbackQuery):
 @router.callback_query(F.data == "menu_my_groups")
 async def nav_my_groups(callback: types.CallbackQuery):
     await show_my_groups_menu(callback.message, callback.from_user.id)
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("set_time|"))
 async def set_notify_time(callback: types.CallbackQuery):
