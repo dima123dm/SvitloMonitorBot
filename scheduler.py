@@ -17,7 +17,7 @@ sent_notifications = {}
 
 async def smart_broadcast(bot, region, queue, text_blackout, text_light, filter_func):
     """
-    Розумна розсилка:
+    Розумна розсилка в ОСОБИСТІ:
     1. Перевіряє налаштування кожного юзера (filter_func).
     2. Відправляє текст залежно від режиму (blackout/light).
     """
@@ -42,6 +42,38 @@ async def smart_broadcast(bot, region, queue, text_blackout, text_light, filter_
         
         # Невелика затримка, щоб уникнути блокування за флуд
         await asyncio.sleep(0.05) 
+
+
+async def group_broadcast(bot, region, queue, text_blackout, text_light, filter_func):
+    """
+    Розсилка в ГРУПИ І КАНАЛИ:
+    1. Перевіряє налаштування групи (filter_func).
+    2. Відправляє текст залежно від режиму (blackout/light).
+    """
+    groups = await db.get_groups_by_queue(region, queue)
+    
+    for group in groups:
+        chat_id = group[0]
+        settings = {
+            'display_mode': group[1] or 'blackout',
+            'notify_outage': group[2] if group[2] is not None else 1,
+            'notify_return': group[3] if group[3] is not None else 1,
+            'notify_changes': group[4] if group[4] is not None else 1,
+            'notify_morning': group[5] if group[5] is not None else 1,
+        }
+        
+        try:
+            if not filter_func(settings):
+                continue
+            
+            mode = settings.get('display_mode', 'blackout')
+            text_to_send = text_light if mode == 'light' else text_blackout
+            
+            await bot.send_message(chat_id, text_to_send, parse_mode="Markdown")
+        except Exception:
+            pass
+        
+        await asyncio.sleep(0.05)
 
 def find_next_outage(current_time_str, today_intervals, tomorrow_intervals):
     """Шукає час наступного відключення."""
@@ -115,6 +147,13 @@ async def check_updates(bot):
                                     header + txt_l.split('\n', 1)[1],
                                     lambda s: s['notify_changes'] == 1
                                 )
+                                # === НОВЕ: розсилка в групи ===
+                                await group_broadcast(
+                                    bot, region, queue,
+                                    header + txt_b.split('\n', 1)[1],
+                                    header + txt_l.split('\n', 1)[1],
+                                    lambda s: s['notify_changes'] == 1
+                                )
                                 # Запам'ятовуємо, що для цієї черги вже було відправлено актуальний графік
                                 sent_notifications[(region, queue)] = today
 
@@ -127,6 +166,11 @@ async def check_updates(bot):
                             txt_l = api.format_message(tom_sch, queue, tomorrow, True, "light")
                             
                             await smart_broadcast(
+                                bot, region, queue, txt_b, txt_l,
+                                lambda s: s['notify_changes'] == 1
+                            )
+                            # === НОВЕ: розсилка в групи ===
+                            await group_broadcast(
                                 bot, region, queue, txt_b, txt_l,
                                 lambda s: s['notify_changes'] == 1
                             )
@@ -147,6 +191,13 @@ async def check_updates(bot):
                                     await smart_broadcast(
                                         bot, region, queue, 
                                         header + txt_b.split('\n', 1)[1], 
+                                        header + txt_l.split('\n', 1)[1],
+                                        lambda s: s['notify_changes'] == 1
+                                    )
+                                    # === НОВЕ: розсилка в групи ===
+                                    await group_broadcast(
+                                        bot, region, queue,
+                                        header + txt_b.split('\n', 1)[1],
                                         header + txt_l.split('\n', 1)[1],
                                         lambda s: s['notify_changes'] == 1
                                     )
@@ -236,6 +287,13 @@ async def check_alerts(bot):
                         header + txt_l.split('\n', 1)[1],
                         lambda s: s['notify_changes'] == 1 
                     )
+                    # === НОВЕ: розсилка в групи (ранкове зведення) ===
+                    await group_broadcast(
+                        bot, region, queue,
+                        header + txt_b.split('\n', 1)[1],
+                        header + txt_l.split('\n', 1)[1],
+                        lambda s: s['notify_morning'] == 1
+                    )
                     
                     # Запам'ятовуємо, що відправили
                     sent_notifications[(region, queue)] = today_str
@@ -279,6 +337,11 @@ async def check_alerts(bot):
                                         bot, key[0], key[1], msg, msg,
                                         lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
                                     )
+                                    # === НОВЕ: розсилка в групи ===
+                                    await group_broadcast(
+                                        bot, key[0], key[1], msg, msg,
+                                        lambda s: s['notify_outage'] == 1
+                                    )
                                     alert_history.add(alert_id)
 
                     # Б) СПОВІЩЕННЯ ПРО ВКЛЮЧЕННЯ
@@ -292,6 +355,11 @@ async def check_alerts(bot):
                                     await smart_broadcast(
                                         bot, key[0], key[1], msg, msg,
                                         lambda s, m=mins: s['notify_return'] == 1 and s['notify_return_before'] == m
+                                    )
+                                    # === НОВЕ: розсилка в групи ===
+                                    await group_broadcast(
+                                        bot, key[0], key[1], msg, msg,
+                                        lambda s: s['notify_return'] == 1
                                     )
                                     alert_history.add(alert_id)
 
@@ -312,6 +380,11 @@ async def check_alerts(bot):
                                         bot, key[0], key[1], msg, msg,
                                         lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
                                     )
+                                    # === НОВЕ: розсилка в групи ===
+                                    await group_broadcast(
+                                        bot, key[0], key[1], msg, msg,
+                                        lambda s: s['notify_outage'] == 1
+                                    )
                                     alert_history.add(alert_id)
 
                 # --- 3. Стик днів (23:XX -> 00:00) ---
@@ -328,6 +401,11 @@ async def check_alerts(bot):
                                      bot, key[0], key[1], msg, msg,
                                      lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
                                  )
+                                 # === НОВЕ: розсилка в групи ===
+                                 await group_broadcast(
+                                     bot, key[0], key[1], msg, msg,
+                                     lambda s: s['notify_outage'] == 1
+                                 )
                                  alert_history.add(alert_id)
 
                 # --- 4. СПОВІЩЕННЯ В МОМЕНТ ВКЛЮЧЕННЯ (Тільки після гарантованих) ---
@@ -343,6 +421,11 @@ async def check_alerts(bot):
                                    f"{next_info}")
                             
                             await smart_broadcast(
+                                bot, key[0], key[1], msg, msg,
+                                lambda s: s['notify_return'] == 1
+                            )
+                            # === НОВЕ: розсилка в групи ===
+                            await group_broadcast(
                                 bot, key[0], key[1], msg, msg,
                                 lambda s: s['notify_return'] == 1
                             )

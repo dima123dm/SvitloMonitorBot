@@ -124,6 +124,24 @@ async def init_db():
             )
         """)
         
+        # === НОВЕ: ТАБЛИЦЯ ПІДПИСОК ГРУП І КАНАЛІВ ===
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS group_subscriptions (
+                chat_id INTEGER PRIMARY KEY,
+                chat_title TEXT,
+                chat_type TEXT,
+                region TEXT NOT NULL,
+                queue TEXT NOT NULL,
+                display_mode TEXT DEFAULT 'blackout',
+                notify_outage INTEGER DEFAULT 1,
+                notify_return INTEGER DEFAULT 1,
+                notify_changes INTEGER DEFAULT 1,
+                notify_morning INTEGER DEFAULT 1,
+                added_by INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         await db.commit()
 
 async def save_user(user_id, region, queue):
@@ -411,3 +429,94 @@ async def get_unread_count():
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+
+# ========== ФУНКЦІЇ ДЛЯ ГРУП І КАНАЛІВ ==========
+
+async def save_group_sub(chat_id, chat_title, chat_type, region, queue, added_by):
+    """Зберігає або оновлює підписку групи/каналу."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            INSERT INTO group_subscriptions (chat_id, chat_title, chat_type, region, queue, added_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET 
+                chat_title=excluded.chat_title, 
+                region=excluded.region, 
+                queue=excluded.queue,
+                added_by=excluded.added_by
+        """, (chat_id, chat_title, chat_type, region, queue, added_by))
+        await db.commit()
+
+async def get_group_sub(chat_id):
+    """Повертає підписку групи/каналу."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT region, queue, display_mode, notify_outage, notify_return, notify_changes, notify_morning FROM group_subscriptions WHERE chat_id = ?",
+            (chat_id,)
+        ) as cur:
+            return await cur.fetchone()
+
+async def delete_group_sub(chat_id):
+    """Видаляє підписку групи/каналу."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM group_subscriptions WHERE chat_id = ?", (chat_id,))
+        await db.commit()
+
+async def get_all_group_subs():
+    """Отримує список усіх підписок груп/каналів."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT chat_id, chat_title, chat_type, region, queue FROM group_subscriptions"
+        ) as cur:
+            return await cur.fetchall()
+
+async def get_groups_by_queue(region, queue):
+    """Отримує групи/канали з конкретною чергою (для розсилки)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT chat_id, display_mode, notify_outage, notify_return, notify_changes, notify_morning 
+            FROM group_subscriptions 
+            WHERE region = ? AND queue = ?
+        """, (region, queue)) as cur:
+            return await cur.fetchall()
+
+async def update_group_setting(chat_id, key, value):
+    """Оновлює конкретне налаштування групи."""
+    allowed_keys = ["display_mode", "notify_outage", "notify_return", "notify_changes", "notify_morning"]
+    if key not in allowed_keys:
+        return
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(f"UPDATE group_subscriptions SET {key} = ? WHERE chat_id = ?", (value, chat_id))
+        await db.commit()
+
+async def get_group_settings(chat_id):
+    """Отримує налаштування групи."""
+    defaults = {
+        "display_mode": "blackout",
+        "notify_outage": 1,
+        "notify_return": 1,
+        "notify_changes": 1,
+        "notify_morning": 1,
+    }
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT display_mode, notify_outage, notify_return, notify_changes, notify_morning
+            FROM group_subscriptions WHERE chat_id = ?
+        """, (chat_id,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                return {
+                    "display_mode": row[0] or "blackout",
+                    "notify_outage": row[1] if row[1] is not None else 1,
+                    "notify_return": row[2] if row[2] is not None else 1,
+                    "notify_changes": row[3] if row[3] is not None else 1,
+                    "notify_morning": row[4] if row[4] is not None else 1,
+                }
+    return defaults
+
+async def get_groups_count():
+    """Отримує кількість підключених груп/каналів."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM group_subscriptions") as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0

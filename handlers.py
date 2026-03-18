@@ -2,19 +2,28 @@
 from datetime import datetime, timedelta
 import asyncio
 from aiogram import Router, types, F
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command, CommandObject, ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.types import KeyboardButton, InlineKeyboardButton
+from aiogram.types import KeyboardButton, InlineKeyboardButton, ChatMemberUpdated
 
 import database as db
 import api_utils as api
 import scheduler
-from config import ADMIN_IDS # Імпортуємо список адмінів
+from config import ADMIN_IDS, BOT_TOKEN # Імпортуємо список адмінів
 
 # Для сумісності з вашим старим кодом, якщо ADMIN_ID використовується як число
 ADMIN_ID = ADMIN_IDS[0] if isinstance(ADMIN_IDS, list) and ADMIN_IDS else 723550550 
 
 router = Router()
+
+# Витягуємо username бота з токену для посилання "Додати в групу"
+_bot_username_cache = None
+async def get_bot_username(bot):
+    global _bot_username_cache
+    if _bot_username_cache is None:
+        me = await bot.get_me()
+        _bot_username_cache = me.username
+    return _bot_username_cache
 
 # --- ДОПОМІЖНА ФУНКЦІЯ ЧАСУ ---
 def get_local_now():
@@ -55,12 +64,31 @@ async def start_command(message: types.Message, command: CommandObject):
             welcome_text = f"👋 **Привіт!**\nЯ знаю твої налаштування: **{user[0]}, Черга {user[1]}**.\nТи можеш налаштувати сповіщення окремо для цієї групи в меню."
         else:
             welcome_text = f"👋 **Ласкаво просимо назад!**\n📍 Ваш вибір: **{user[0]}, Черга {user[1]}**"
-            
-        await message.answer(
-            welcome_text,
-            reply_markup=get_main_keyboard(message.from_user.id),
-            parse_mode="Markdown"
-        )
+
+        # Інлайн-кнопка для додавання бота в групу (тільки в особистих)
+        reply_markup = get_main_keyboard(message.from_user.id)
+        if message.chat.type == 'private':
+            bot_username = await get_bot_username(message.bot)
+            kb_inline = InlineKeyboardBuilder()
+            kb_inline.button(
+                text="➕ Додати бота в групу/канал",
+                url=f"https://t.me/{bot_username}?startgroup=true&admin=post_messages"
+            )
+            await message.answer(
+                welcome_text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+            await message.answer(
+                "💡 Хочете отримувати графік у групі або каналі?",
+                reply_markup=kb_inline.as_markup()
+            )
+        else:
+            await message.answer(
+                welcome_text,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
         return
     
     # Якщо юзера немає в базі
@@ -74,21 +102,340 @@ async def start_command(message: types.Message, command: CommandObject):
 # === НОВА КОМАНДА /grafik ===
 @router.message(Command("grafik"))
 async def grafik_command(message: types.Message):
-    """Виводить графік на сьогодні для користувача."""
+    """Виводить графік на сьогодні для користувача або групи."""
+    # Якщо в групі — спочатку перевіряємо підписку групи
+    if message.chat.type in ['group', 'supergroup']:
+        group_sub = await db.get_group_sub(message.chat.id)
+        if group_sub:
+            # Група налаштована — показуємо графік групи
+            region, queue = group_sub[0], group_sub[1]
+            display_mode = group_sub[2] or 'blackout'
+            await show_today_schedule(message, region, queue, user_id=message.from_user.id, display_mode_override=display_mode)
+            return
+        # Група НЕ налаштована — fallback на особисті налаштування юзера
+
+    # В особистих або якщо група не налаштована — беремо дані юзера
     user = await db.get_user(message.from_user.id)
-    
-    # Якщо юзер не налаштований
     if not user:
         if message.chat.type in ['group', 'supergroup']:
-             # У групі просимо писати в лічку
-             await message.reply("⚠️ Я не знаю вашого регіону. Напишіть мені /start в особисті повідомлення, щоб налаштувати.")
+            await message.reply("⚠️ Я не знаю вашого регіону.\nНапишіть мені /start в особисті, або адмін може налаштувати групу через /setup")
         else:
-             # В особистих просто кажемо налаштувати
-             await message.answer("Спочатку зробіть налаштування через /start.")
+            await message.answer("Спочатку зробіть налаштування через /start.")
         return
 
-    # Викликаємо функцію показу графіку
     await show_today_schedule(message, user[0], user[1], user_id=message.from_user.id)
+
+
+# ==========================================
+# === РОБОТА З ГРУПАМИ І КАНАЛАМИ ===
+# ==========================================
+
+# --- ПРИВІТНЕ ПОВІДОМЛЕННЯ ПРИ ДОДАВАННІ В ГРУПУ ---
+@router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_NOT_MEMBER >> IS_MEMBER))
+async def bot_added_to_group(event: ChatMemberUpdated):
+    """Бот доданий в групу або канал — вітальне повідомлення."""
+    chat = event.chat
+    
+    if chat.type == 'channel':
+        # Для каналів — коротке повідомлення
+        try:
+            await event.bot.send_message(
+                chat.id,
+                "📡 **Бот Моніторингу Світла підключений!**\n\n"
+                "Для налаштування — адмін повинен написати боту в особисті повідомлення "
+                "і назвати ID цього каналу для прив'язки.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+        return
+    
+    # Для груп — повне привітне повідомлення
+    try:
+        await event.bot.send_message(
+            chat.id,
+            "👋 **Привіт! Я бот Моніторингу Світла.**\n\n"
+            "Я можу надсилати в цю групу:\n"
+            "⚡️ Сповіщення про відключення та включення\n"
+            "📅 Щоденний графік світла\n"
+            "🔄 Оповіщення при зміні графіку\n"
+            "☀️ Ранкове зведення о 06:00\n\n"
+            "**Як налаштувати:**\n"
+            "1️⃣ /setup — обрати область і чергу для групи\n"
+            "2️⃣ /group\\_settings — налаштувати сповіщення\n\n"
+            "**Інші команди:**\n"
+            "📅 /grafik — графік на сьогодні\n\n"
+            "💡 _Налаштувати може тільки адмін групи._",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"Помилка привітання в групі: {e}")
+
+
+# --- КОМАНДА /setup ДЛЯ ГРУПИ ---
+@router.message(Command("setup"))
+async def setup_group_command(message: types.Message):
+    """Налаштування бота для групи — вибір регіону і черги."""
+    # Тільки в групах
+    if message.chat.type not in ['group', 'supergroup']:
+        await message.answer("ℹ️ Ця команда працює тільки в групах.\nДля особистих налаштувань використовуйте /start")
+        return
+    
+    # Перевіряємо, чи юзер — адмін групи
+    try:
+        member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await message.reply("⛔ Тільки адміністратор групи може налаштовувати бота.")
+            return
+    except Exception:
+        await message.reply("⚠️ Не вдалося перевірити права. Спробуйте ще раз.")
+        return
+    
+    # Показуємо меню регіонів для групи
+    data = await api.fetch_api_data()
+    if not data:
+        await message.answer("⚠️ Помилка отримання даних.")
+        return
+    
+    kb = InlineKeyboardBuilder()
+    for region in data['regions']:
+        kb.button(text=region['name_ua'], callback_data=f"grp_reg|{region['name_ua']}")
+    kb.adjust(2)
+    
+    await message.answer(
+        "⚙️ **Налаштування групи**\n\n"
+        "👇 Оберіть область для цієї групи:",
+        reply_markup=kb.as_markup(),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("grp_reg|"))
+async def grp_select_region(callback: types.CallbackQuery):
+    """Вибір регіону для групи."""
+    # Перевірка адміна
+    try:
+        member = await callback.bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await callback.answer("⛔ Тільки адмін!", show_alert=True)
+            return
+    except Exception:
+        pass
+    
+    region_name = callback.data.split("|")[1]
+    data = await api.fetch_api_data()
+    if not data:
+        await callback.answer("Помилка API", show_alert=True)
+        return
+    
+    kb = InlineKeyboardBuilder()
+    for r in data['regions']:
+        if r['name_ua'] == region_name:
+            for q in sorted(r['schedule'].keys()):
+                kb.button(text=f"Черга {q}", callback_data=f"grp_q|{region_name}|{q}")
+            break
+    kb.adjust(3)
+    await callback.message.edit_text(
+        f"📍 **{region_name}**. Оберіть чергу для групи:",
+        reply_markup=kb.as_markup(),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("grp_q|"))
+async def grp_select_queue(callback: types.CallbackQuery):
+    """Вибір черги для групи."""
+    # Перевірка адміна
+    try:
+        member = await callback.bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await callback.answer("⛔ Тільки адмін!", show_alert=True)
+            return
+    except Exception:
+        pass
+    
+    _, region, queue = callback.data.split("|")
+    chat = callback.message.chat
+    
+    await db.save_group_sub(
+        chat_id=chat.id,
+        chat_title=chat.title or "Без назви",
+        chat_type=chat.type,
+        region=region,
+        queue=queue,
+        added_by=callback.from_user.id
+    )
+    
+    await callback.message.edit_text(
+        f"✅ **Групу налаштовано!**\n\n"
+        f"📍 {region}, Черга {queue}\n\n"
+        f"Тепер бот буде надсилати сповіщення в цю групу.\n"
+        f"Налаштувати сповіщення: /group_settings",
+        parse_mode="Markdown"
+    )
+
+
+# --- КОМАНДА /group_settings ---
+@router.message(Command("group_settings"))
+async def group_settings_command(message: types.Message):
+    """Налаштування сповіщень для групи."""
+    if message.chat.type not in ['group', 'supergroup']:
+        await message.answer("ℹ️ Ця команда працює тільки в групах.")
+        return
+    
+    # Перевірка адміна
+    try:
+        member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await message.reply("⛔ Тільки адміністратор групи може змінювати налаштування.")
+            return
+    except Exception:
+        await message.reply("⚠️ Не вдалося перевірити права.")
+        return
+    
+    group_sub = await db.get_group_sub(message.chat.id)
+    if not group_sub:
+        await message.answer("⚠️ Спочатку налаштуйте групу через /setup")
+        return
+    
+    await show_group_settings_menu(message, message.chat.id)
+
+
+async def show_group_settings_menu(message, chat_id, edit=False):
+    """Показує меню налаштувань групи."""
+    group_sub = await db.get_group_sub(chat_id)
+    if not group_sub:
+        return
+    
+    region, queue = group_sub[0], group_sub[1]
+    settings = await db.get_group_settings(chat_id)
+    
+    # Іконки стану
+    icon_out = "✅" if settings['notify_outage'] else "❌"
+    icon_ret = "✅" if settings['notify_return'] else "❌"
+    icon_chg = "✅" if settings['notify_changes'] else "❌"
+    icon_mrn = "✅" if settings['notify_morning'] else "❌"
+    
+    mode_text = "🟢 Світло Є" if settings['display_mode'] == 'light' else "⬛️ Світла НЕМАЄ"
+
+    text = (
+        f"⚙️ **Налаштування групи**\n"
+        f"📍 {region}, Черга {queue}\n\n"
+        f"🎨 Вигляд графіку: **{mode_text}**\n\n"
+        f"**Сповіщення:**\n"
+        f"{icon_out} Відключення світла\n"
+        f"{icon_ret} Включення світла\n"
+        f"{icon_chg} Зміни графіку\n"
+        f"{icon_mrn} Ранкове зведення (06:00)"
+    )
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"{icon_out} Відключення", callback_data="grp_tog|notify_outage")
+    kb.button(text=f"{icon_ret} Включення", callback_data="grp_tog|notify_return")
+    kb.button(text=f"{icon_chg} Зміни графіку", callback_data="grp_tog|notify_changes")
+    kb.button(text=f"{icon_mrn} Ранкове зведення", callback_data="grp_tog|notify_morning")
+    
+    # Режим відображення
+    mode_btn = "🟢 Переключити на СВІТЛО" if settings['display_mode'] == 'blackout' else "⬛️ Переключити на ВІДКЛЮЧЕННЯ"
+    kb.button(text=mode_btn, callback_data="grp_mode")
+    
+    # Змінити чергу
+    kb.button(text="📍 Змінити область/чергу", callback_data="grp_change_region")
+    
+    # Відписатися
+    kb.button(text="🔕 Відключити бота від групи", callback_data="grp_unsub")
+    
+    kb.adjust(2, 2, 1, 1, 1)
+    
+    if edit:
+        await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+    else:
+        await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("grp_tog|"))
+async def grp_toggle_setting(callback: types.CallbackQuery):
+    """Перемикає налаштування групи."""
+    try:
+        member = await callback.bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await callback.answer("⛔ Тільки адмін!", show_alert=True)
+            return
+    except Exception:
+        pass
+    
+    key = callback.data.split("|")[1]
+    settings = await db.get_group_settings(callback.message.chat.id)
+    new_val = 0 if settings[key] else 1
+    await db.update_group_setting(callback.message.chat.id, key, new_val)
+    await show_group_settings_menu(callback.message, callback.message.chat.id, edit=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "grp_mode")
+async def grp_toggle_mode(callback: types.CallbackQuery):
+    """Перемикає режим відображення для групи."""
+    try:
+        member = await callback.bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await callback.answer("⛔ Тільки адмін!", show_alert=True)
+            return
+    except Exception:
+        pass
+    
+    settings = await db.get_group_settings(callback.message.chat.id)
+    new_mode = "light" if settings['display_mode'] == 'blackout' else 'blackout'
+    await db.update_group_setting(callback.message.chat.id, "display_mode", new_mode)
+    await show_group_settings_menu(callback.message, callback.message.chat.id, edit=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "grp_change_region")
+async def grp_change_region(callback: types.CallbackQuery):
+    """Змінити область/чергу для групи."""
+    try:
+        member = await callback.bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await callback.answer("⛔ Тільки адмін!", show_alert=True)
+            return
+    except Exception:
+        pass
+    
+    data = await api.fetch_api_data()
+    if not data:
+        await callback.answer("Помилка API", show_alert=True)
+        return
+    
+    kb = InlineKeyboardBuilder()
+    for region in data['regions']:
+        kb.button(text=region['name_ua'], callback_data=f"grp_reg|{region['name_ua']}")
+    kb.adjust(2)
+    
+    await callback.message.edit_text(
+        "📍 **Оберіть нову область:**",
+        reply_markup=kb.as_markup(),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data == "grp_unsub")
+async def grp_unsubscribe(callback: types.CallbackQuery):
+    """Відписка групи від сповіщень."""
+    try:
+        member = await callback.bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
+        if member.status not in ['creator', 'administrator']:
+            await callback.answer("⛔ Тільки адмін!", show_alert=True)
+            return
+    except Exception:
+        pass
+    
+    await db.delete_group_sub(callback.message.chat.id)
+    await callback.message.edit_text(
+        "🔕 **Бот відключений від групи.**\n"
+        "Сповіщення більше не надсилатимуться.\n\n"
+        "Щоб підключити знову — /setup",
+        parse_mode="Markdown"
+    )
 
 
 # ==========================================
@@ -364,14 +711,18 @@ async def select_queue(callback: types.CallbackQuery):
     )
 
 
-async def show_today_schedule(message, region, queue, user_id=None):
+async def show_today_schedule(message, region, queue, user_id=None, display_mode_override=None):
     uid = user_id if user_id else message.from_user.id
     
     today = get_local_now().strftime('%Y-%m-%d')
     schedule = None
     
-    settings = await db.get_user_settings(uid)
-    display_mode = settings.get('display_mode', 'blackout')
+    # Якщо передано display_mode_override (з групи) — використовуємо його
+    if display_mode_override:
+        display_mode = display_mode_override
+    else:
+        settings = await db.get_user_settings(uid)
+        display_mode = settings.get('display_mode', 'blackout')
 
     cached_data = scheduler.schedules_cache.get((region, queue))
     
@@ -394,9 +745,10 @@ async def show_today_schedule(message, region, queue, user_id=None):
     if message.chat.type in ['group', 'supergroup']:
         # Якщо у юзера ім'я типу "User_Name" або "*Admin*", це ламає Markdown.
         # Тому ми вирізаємо небезпечні символи.
-        raw_name = message.from_user.first_name or "Користувач"
-        safe_name = raw_name.replace("*", "").replace("_", "").replace("`", "").replace("[", "")
-        text = f"👤 **{safe_name}**, твій графік:\n" + text
+        if message.from_user:
+            raw_name = message.from_user.first_name or "Користувач"
+            safe_name = raw_name.replace("*", "").replace("_", "").replace("`", "").replace("[", "")
+            text = f"👤 **{safe_name}**, твій графік:\n" + text
 
     # Безпечна відправка
     try:
@@ -747,7 +1099,20 @@ async def users_count(message: types.Message):
     if message.from_user.id != ADMIN_ID: 
         return
     count = await db.get_users_count()
-    await message.answer(f"👥 **Всього користувачів:** {count}", parse_mode="Markdown")
+    groups_count = await db.get_groups_count()
+    
+    text = f"👥 **Всього користувачів:** {count}\n"
+    text += f"💬 **Підключених груп/каналів:** {groups_count}"
+    
+    if groups_count > 0:
+        groups = await db.get_all_group_subs()
+        text += "\n\n📋 **Список груп:**"
+        for g in groups:
+            chat_id, title, chat_type, region, queue = g
+            type_icon = "📢" if chat_type == "channel" else "💬"
+            text += f"\n{type_icon} {title or 'Без назви'} — {region}, Ч.{queue}"
+    
+    await message.answer(text, parse_mode="Markdown")
 
 
 @router.message(F.text == "🏠 Меню")
