@@ -292,7 +292,7 @@ async def check_alerts(bot):
                         bot, region, queue,
                         header + txt_b.split('\n', 1)[1],
                         header + txt_l.split('\n', 1)[1],
-                        lambda s: s['notify_morning'] == 1
+                        lambda s: s['notify_changes'] == 1
                     )
                     
                     # Запам'ятовуємо, що відправили
