@@ -470,6 +470,15 @@ async def get_all_group_subs():
         ) as cur:
             return await cur.fetchall()
 
+async def get_user_managed_groups(user_id):
+    """Отримує всі групи/канали, додані цим користувачем."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT chat_id, chat_title, chat_type, region, queue FROM group_subscriptions WHERE added_by = ?",
+            (user_id,)
+        ) as cur:
+            return await cur.fetchall()
+
 async def get_groups_by_queue(region, queue):
     """Отримує групи/канали з конкретною чергою (для розсилки)."""
     async with aiosqlite.connect(DB_NAME) as db:
