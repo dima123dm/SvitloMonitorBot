@@ -150,7 +150,6 @@ async def init_db():
             await db.execute("ALTER TABLE group_subscriptions ADD COLUMN notify_return_before INTEGER DEFAULT 0")
         except Exception:
             pass
-        """)
 
         await db.commit()
 
