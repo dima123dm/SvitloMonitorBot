@@ -340,7 +340,7 @@ async def check_alerts(bot):
                                     # === НОВЕ: розсилка в групи ===
                                     await group_broadcast(
                                         bot, key[0], key[1], msg, msg,
-                                        lambda s: s['notify_outage'] == 1
+                                        lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
                                     )
                                     alert_history.add(alert_id)
 
@@ -359,7 +359,7 @@ async def check_alerts(bot):
                                     # === НОВЕ: розсилка в групи ===
                                     await group_broadcast(
                                         bot, key[0], key[1], msg, msg,
-                                        lambda s: s['notify_return'] == 1
+                                        lambda s, m=mins: s['notify_return'] == 1 and s['notify_return_before'] == m
                                     )
                                     alert_history.add(alert_id)
 
@@ -383,7 +383,7 @@ async def check_alerts(bot):
                                     # === НОВЕ: розсилка в групи ===
                                     await group_broadcast(
                                         bot, key[0], key[1], msg, msg,
-                                        lambda s: s['notify_outage'] == 1
+                                        lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
                                     )
                                     alert_history.add(alert_id)
 
@@ -404,7 +404,7 @@ async def check_alerts(bot):
                                  # === НОВЕ: розсилка в групи ===
                                  await group_broadcast(
                                      bot, key[0], key[1], msg, msg,
-                                     lambda s: s['notify_outage'] == 1
+                                     lambda s, m=mins: s['notify_outage'] == 1 and s['notify_before'] == m
                                  )
                                  alert_history.add(alert_id)
 

@@ -136,10 +136,20 @@ async def init_db():
                 notify_outage INTEGER DEFAULT 1,
                 notify_return INTEGER DEFAULT 1,
                 notify_changes INTEGER DEFAULT 1,
+                notify_before INTEGER DEFAULT 5,
+                notify_return_before INTEGER DEFAULT 0,
                 notify_morning INTEGER DEFAULT 1,
                 added_by INTEGER,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+        
+        # Міграція для додавання нових колонок, якщо їх немає
+        try:
+            await db.execute("ALTER TABLE group_subscriptions ADD COLUMN notify_before INTEGER DEFAULT 5")
+            await db.execute("ALTER TABLE group_subscriptions ADD COLUMN notify_return_before INTEGER DEFAULT 0")
+        except Exception:
+            pass
         """)
 
         await db.commit()
@@ -483,7 +493,7 @@ async def get_groups_by_queue(region, queue):
     """Отримує групи/канали з конкретною чергою (для розсилки)."""
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("""
-            SELECT chat_id, display_mode, notify_outage, notify_return, notify_changes, notify_morning 
+            SELECT chat_id, display_mode, notify_outage, notify_return, notify_changes, notify_morning, notify_before, notify_return_before 
             FROM group_subscriptions 
             WHERE region = ? AND queue = ?
         """, (region, queue)) as cur:
@@ -491,7 +501,7 @@ async def get_groups_by_queue(region, queue):
 
 async def update_group_setting(chat_id, key, value):
     """Оновлює конкретне налаштування групи."""
-    allowed_keys = ["display_mode", "notify_outage", "notify_return", "notify_changes", "notify_morning"]
+    allowed_keys = ["display_mode", "notify_outage", "notify_return", "notify_changes", "notify_morning", "notify_before", "notify_return_before"]
     if key not in allowed_keys:
         return
     async with aiosqlite.connect(DB_NAME) as db:
@@ -506,21 +516,28 @@ async def get_group_settings(chat_id):
         "notify_return": 1,
         "notify_changes": 1,
         "notify_morning": 1,
+        "notify_before": 5,
+        "notify_return_before": 0
     }
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("""
-            SELECT display_mode, notify_outage, notify_return, notify_changes, notify_morning
-            FROM group_subscriptions WHERE chat_id = ?
-        """, (chat_id,)) as cur:
-            row = await cur.fetchone()
-            if row:
-                return {
-                    "display_mode": row[0] or "blackout",
-                    "notify_outage": row[1] if row[1] is not None else 1,
-                    "notify_return": row[2] if row[2] is not None else 1,
-                    "notify_changes": row[3] if row[3] is not None else 1,
-                    "notify_morning": row[4] if row[4] is not None else 1,
-                }
+        try:
+            async with db.execute("""
+                SELECT display_mode, notify_outage, notify_return, notify_changes, notify_morning, notify_before, notify_return_before
+                FROM group_subscriptions WHERE chat_id = ?
+            """, (chat_id,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    return {
+                        "display_mode": row[0] or "blackout",
+                        "notify_outage": row[1] if row[1] is not None else 1,
+                        "notify_return": row[2] if row[2] is not None else 1,
+                        "notify_changes": row[3] if row[3] is not None else 1,
+                        "notify_morning": row[4] if row[4] is not None else 1,
+                        "notify_before": row[5] if len(row) > 5 and row[5] is not None else 5,
+                        "notify_return_before": row[6] if len(row) > 6 and row[6] is not None else 0
+                    }
+        except Exception:
+            pass
     return defaults
 
 async def get_groups_count():

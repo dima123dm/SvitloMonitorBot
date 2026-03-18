@@ -380,13 +380,19 @@ async def show_group_settings_menu(message, chat_id, edit=False):
     else:
         mode_status = "⬛️ Показую, коли світла НЕМАЄ"
 
+    t_out = f"{settings['notify_before']} хв" if settings['notify_before'] > 0 else "Вимкнено"
+    t_in = f"{settings['notify_return_before']} хв" if settings['notify_return_before'] > 0 else "Вимкнено"
+
     text = (
         f"⚙️ **Головні налаштування групи**\n"
         f"📍 Локація: **{region}, Черга {queue}**\n\n"
+        f"⏰ Таймер відключення: **{t_out}**\n"
+        f"⏰ Таймер включення: **{t_in}**\n"
         f"🎨 Вигляд графіку: **{mode_status}**"
     )
     
     kb = InlineKeyboardBuilder()
+    kb.button(text="⏰ Налаштувати таймери >", callback_data=f"grp_menu_time_select|{chat_id}")
     kb.button(text="🔔 Налаштування сповіщень >", callback_data=f"grp_menu_types|{chat_id}")
     kb.button(text="🎨 Вигляд графіку >", callback_data=f"grp_menu_mode|{chat_id}")
     kb.button(text="📍 Змінити область/чергу >", callback_data=f"grp_change_region|{chat_id}")
@@ -426,9 +432,6 @@ async def show_group_types_menu(message, chat_id):
     icon_chg = "✅" if settings['notify_changes'] else "❌"
     kb.button(text=f"{icon_chg} Якщо змінився графік", callback_data=f"grp_tog|{chat_id}|notify_changes")
     
-    icon_mrn = "✅" if settings['notify_morning'] else "❌"
-    kb.button(text=f"{icon_mrn} Ранкове зведення (06:00)", callback_data=f"grp_tog|{chat_id}|notify_morning")
-    
     kb.adjust(1)
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"grp_menu_main|{chat_id}"))
     
@@ -456,6 +459,51 @@ async def show_group_mode_menu(message, chat_id):
     
     kb.adjust(1)
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"grp_menu_main|{chat_id}"))
+    
+    await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+# --- ПІДМЕНЮ: ВИБІР ТАЙМЕРА ГРУПИ (НОВЕ) ---
+async def show_group_time_type_selection(message, chat_id):
+    """Меню вибору: який таймер налаштовуємо для групи?"""
+    text = "⏰ **Налаштування часу**\n\nЯкий таймер ви хочете змінити?"
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔦 Відключення", callback_data=f"grp_time_edit|{chat_id}|outage")
+    kb.button(text="💡 До включення", callback_data=f"grp_time_edit|{chat_id}|return")
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"grp_menu_main|{chat_id}"))
+    
+    await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+# --- ПІДМЕНЮ: ВИБІР ХВИЛИН ГРУПИ ---
+async def show_group_minutes_menu(message, chat_id, timer_type):
+    """Меню вибору хвилин для конкретного таймера групи."""
+    settings = await db.get_group_settings(chat_id)
+    
+    if timer_type == "outage":
+        current = settings['notify_before']
+        title = "🔦 **Попередження про ВІДКЛЮЧЕННЯ (Ця Група)**"
+    else:
+        current = settings['notify_return_before']
+        title = "💡 **Попередження про ВКЛЮЧЕННЯ (Ця Група)**"
+
+    text = (
+        f"{title}\n\n"
+        f"За скільки хвилин попередити учасників?"
+    )
+    
+    kb = InlineKeyboardBuilder()
+    times = [5, 15, 30, 60]
+    
+    for t in times:
+        mark = "✅" if current == t else ""
+        label = "1 год" if t == 60 else f"{t} хв"
+        kb.button(text=f"{mark} {label}", callback_data=f"grp_set_time|{chat_id}|{timer_type}|{t}")
+    
+    mark_off = "✅" if current == 0 else ""
+    kb.row(InlineKeyboardButton(text=f"{mark_off} 🔕 Не нагадувати", callback_data=f"grp_set_time|{chat_id}|{timer_type}|0"))
+    
+    kb.adjust(2, 2, 1) 
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data=f"grp_menu_time_select|{chat_id}"))
     
     await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
@@ -494,6 +542,48 @@ async def grp_go_to_mode(callback: types.CallbackQuery):
         return
         
     await show_group_mode_menu(callback.message, target_chat_id)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("grp_menu_time_select|"))
+async def grp_go_to_time_sel(callback: types.CallbackQuery):
+    """Перехід до підменю вибору таймера."""
+    target_chat_id = int(callback.data.split("|")[1])
+    if not await is_admin(callback.bot, target_chat_id, callback.from_user.id):
+        await callback.answer("⛔ Тільки адмін!", show_alert=True)
+        return
+    await show_group_time_type_selection(callback.message, target_chat_id)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("grp_time_edit|"))
+async def grp_go_to_time_edit(callback: types.CallbackQuery):
+    """Перехід до налаштування конкретного таймера."""
+    parts = callback.data.split("|")
+    target_chat_id = int(parts[1])
+    timer_type = parts[2]
+    
+    if not await is_admin(callback.bot, target_chat_id, callback.from_user.id):
+        await callback.answer("⛔ Тільки адмін!", show_alert=True)
+        return
+        
+    await show_group_minutes_menu(callback.message, target_chat_id, timer_type)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("grp_set_time|"))
+async def grp_set_time(callback: types.CallbackQuery):
+    """Збереження часу таймера."""
+    parts = callback.data.split("|")
+    target_chat_id = int(parts[1])
+    timer_type = parts[2]
+    mins = int(parts[3])
+    
+    if not await is_admin(callback.bot, target_chat_id, callback.from_user.id):
+        await callback.answer("⛔ Тільки адмін!", show_alert=True)
+        return
+        
+    db_key = "notify_before" if timer_type == "outage" else "notify_return_before"
+    await db.update_group_setting(target_chat_id, db_key, mins)
+    
+    await show_group_minutes_menu(callback.message, target_chat_id, timer_type)
     await callback.answer()
 
 
