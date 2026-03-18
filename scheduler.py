@@ -60,6 +60,8 @@ async def group_broadcast(bot, region, queue, text_blackout, text_light, filter_
             'notify_return': group[3] if group[3] is not None else 1,
             'notify_changes': group[4] if group[4] is not None else 1,
             'notify_morning': group[5] if group[5] is not None else 1,
+            'notify_before': group[6] if len(group) > 6 and group[6] is not None else 5,
+            'notify_return_before': group[7] if len(group) > 7 and group[7] is not None else 0
         }
         
         try:

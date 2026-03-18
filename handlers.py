@@ -816,35 +816,38 @@ async def show_mode_menu(message: types.Message, user_id):
 
 # --- 6. ПІДМЕНЮ: МОЇ ГРУПИ/КАНАЛИ ---
 async def show_my_groups_menu(message: types.Message, user_id):
+    """Меню списку керованих груп/каналів."""
     groups = await db.get_user_managed_groups(user_id)
+    
+    kb = InlineKeyboardBuilder()
     
     if not groups:
         text = (
             "📢 **Мої канали/групи**\n\n"
-            "Ви ще не додали бота до жодного каналу чи групи.\n\n"
-            "Скористайтеся командою /addtogroup, щоб додати бота та налаштувати сповіщення."
+            "Ви поки не додали жодного чату.\n\n"
+            "💡 **Як додати?**\n"
+            "1. Напишіть команду /addtogroup\n"
+            "2. Додайте бота в чат\n"
+            "3. Виконайте налаштування (команда /setup у групі)\n\n"
+            "Після цього чат з'явиться у цьому списку."
         )
-        kb = InlineKeyboardBuilder()
-        kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
-        await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
-        return
+    else:
+        text = (
+            "📢 **Мої канали/групи**\n\n"
+            "Виберіть чат для налаштування сповіщень:\n\n"
+            "💡 _Щоб додати новий чат, використовуйте_ /addtogroup"
+        )
+        for grp in groups:
+            chat_id, chat_title, chat_type, region, queue = grp
+            icon = "📢" if chat_type == "channel" else "👥"
+            display_title = chat_title[:25] + "..." if len(chat_title) > 25 else chat_title
+            kb.button(
+                text=f"{icon} {display_title}",
+                callback_data=f"grp_menu_main|{chat_id}"
+            )
+        kb.adjust(1)
 
-    text = (
-        "📢 **Мої канали/групи**\n\n"
-        "Виберіть чат для налаштування сповіщень:"
-    )
-    
-    kb = InlineKeyboardBuilder()
-    for grp in groups:
-        chat_id, chat_title, chat_type, region, queue = grp
-        # Скорочуємо назву якщо занадто довга
-        display_title = chat_title[:30] + "..." if len(chat_title) > 30 else chat_title
-        kb.button(
-            text=f"Налаштувати {display_title}",
-            callback_data=f"grp_menu_main|{chat_id}"
-        )
-    
-    kb.adjust(1)
+    kb.row(InlineKeyboardButton(text="🔄 Оновити список", callback_data="menu_my_groups"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main"))
     
     await message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
