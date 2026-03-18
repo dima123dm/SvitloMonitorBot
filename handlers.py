@@ -234,8 +234,8 @@ async def send_group_region_menu(message_or_callback, target_chat_id):
         return
     
     kb = InlineKeyboardBuilder()
-    for region in data['regions']:
-        kb.button(text=region['name_ua'], callback_data=f"grp_reg|{target_chat_id}|{region['name_ua']}")
+    for idx, region in enumerate(data['regions']):
+        kb.button(text=region['name_ua'], callback_data=f"grp_reg|{target_chat_id}|{idx}")
     kb.adjust(2)
     
     text = (
@@ -267,24 +267,25 @@ async def grp_select_region(callback: types.CallbackQuery):
     """Вибір регіону для групи."""
     parts = callback.data.split("|")
     target_chat_id = int(parts[1])
-    region_name = parts[2]
+    region_idx = int(parts[2])
     
     if not await is_admin(callback.bot, target_chat_id, callback.from_user.id):
         await callback.answer("⛔ Тільки адмін!", show_alert=True)
         return
     
     data = await api.fetch_api_data()
-    if not data:
+    if not data or 'regions' not in data or region_idx >= len(data['regions']):
         await callback.answer("Помилка API", show_alert=True)
         return
     
+    region_data = data['regions'][region_idx]
+    region_name = region_data['name_ua']
+    
     kb = InlineKeyboardBuilder()
-    for r in data['regions']:
-        if r['name_ua'] == region_name:
-            for q in sorted(r['schedule'].keys()):
-                kb.button(text=f"Черга {q}", callback_data=f"grp_q|{target_chat_id}|{region_name}|{q}")
-            break
+    for q in sorted(region_data['schedule'].keys()):
+        kb.button(text=f"Черга {q}", callback_data=f"grp_q|{target_chat_id}|{region_idx}|{q}")
     kb.adjust(3)
+    
     await callback.message.edit_text(
         f"📍 **{region_name}**. Оберіть чергу для групи/каналу:",
         reply_markup=kb.as_markup(),
@@ -295,32 +296,46 @@ async def grp_select_region(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("grp_q|"))
 async def grp_select_queue(callback: types.CallbackQuery):
     """Вибір черги для групи."""
-    # Перевірка адміна
-    try:
-        member = await callback.bot.get_chat_member(callback.message.chat.id, callback.from_user.id)
-        if member.status not in ['creator', 'administrator']:
-            await callback.answer("⛔ Тільки адмін!", show_alert=True)
-            return
-    except Exception:
-        pass
+    parts = callback.data.split("|")
+    target_chat_id = int(parts[1])
+    region_idx = int(parts[2])
+    queue = parts[3]
     
-    _, region, queue = callback.data.split("|")
-    chat = callback.message.chat
+    if not await is_admin(callback.bot, target_chat_id, callback.from_user.id):
+        await callback.answer("⛔ Тільки адмін!", show_alert=True)
+        return
     
+    data = await api.fetch_api_data()
+    if not data or 'regions' not in data or region_idx >= len(data['regions']):
+        await callback.answer("Помилка API", show_alert=True)
+        return
+        
+    region_name = data['regions'][region_idx]['name_ua']
+    
+    # Зберігаємо підписку групи. `added_by` = callback.from_user.id
+    chat_title = "Без назви"
+    chat_type = "supergroup"
+    if callback.message.chat.id == target_chat_id:
+        chat_title = callback.message.chat.title or "Без назви"
+        chat_type = callback.message.chat.type
+        
     await db.save_group_sub(
-        chat_id=chat.id,
-        chat_title=chat.title or "Без назви",
-        chat_type=chat.type,
-        region=region,
+        chat_id=target_chat_id,
+        chat_title=chat_title,
+        chat_type=chat_type,
+        region=region_name,
         queue=queue,
         added_by=callback.from_user.id
     )
     
+    bot_username = await get_bot_username(callback.bot)
+    
     await callback.message.edit_text(
-        f"✅ **Групу налаштовано!**\n\n"
-        f"📍 {region}, Черга {queue}\n\n"
-        f"Тепер бот буде надсилати сповіщення в цю групу.\n"
-        f"Налаштувати сповіщення: /group\\_settings",
+        f"✅ **Групу/Канал налаштовано!**\n\n"
+        f"📍 {region_name}, Черга {queue}\n\n"
+        f"Тепер бот буде надсилати сповіщення.\n"
+        f"Щоб змінити налаштування: /group\\_settings у групі або перейдіть за цим посиланням у випадку каналу:\n"
+        f"https://t.me/{bot_username}?start=c{str(target_chat_id).replace('-100', '')}",
         parse_mode="Markdown"
     )
 
