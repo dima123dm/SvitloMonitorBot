@@ -338,6 +338,32 @@ async def grp_select_queue(callback: types.CallbackQuery):
         f"https://t.me/{bot_username}?start=c{str(target_chat_id).replace('-100', '')}",
         parse_mode="Markdown"
     )
+    
+    # === НОВЕ: Надсилаємо актуальний графік у групу/канал ===
+    try:
+        settings = await db.get_group_settings(target_chat_id)
+        display_mode = settings.get('display_mode', 'blackout')
+        
+        today = get_local_now().strftime('%Y-%m-%d')
+        schedule = None
+        
+        cached_data = scheduler.schedules_cache.get((region_name, queue))
+        if cached_data is not None:
+            schedule = cached_data.get("today")
+        else:
+            api_data = await api.fetch_api_data()
+            if api_data:
+                for r in api_data['regions']:
+                    if r['name_ua'] == region_name:
+                        schedule = r['schedule'].get(queue, {}).get(today)
+                        break
+        
+        if schedule:
+            text = api.format_message(schedule, queue, today, is_tomorrow=False, display_mode=display_mode)
+            header = f"📋 **Актуальний графік на сьогодні:**\n"
+            await callback.bot.send_message(target_chat_id, header + text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Помилка відправки графіку в групу: {e}")
 
 
 # --- КОМАНДА /group_settings ---
