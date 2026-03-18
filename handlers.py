@@ -47,48 +47,40 @@ def get_main_keyboard(user_id=None):
 @router.message(Command("start"))
 async def start_command(message: types.Message, command: CommandObject):
     """Команда /start."""
+    # В групах /start не працює — вітання виконує my_chat_member
+    if message.chat.type in ['group', 'supergroup']:
+        return
+
     # Підтримка Deep Linking (якщо перейшли по посиланню налаштувань)
     if command.args == "settings":
-        # Перевіряємо, чи є користувач в базі взагалі
         user = await db.get_user(message.from_user.id)
         if user:
             await show_settings_main(message, message.from_user.id)
             return
 
-    # Перевіряємо, чи знаємо ми цього юзера глобально
+    # Перевіряємо, чи знаємо ми цього юзера
     user = await db.get_user(message.from_user.id)
     
     if user:
-        # Текст вітання залежить від того, де ми (група чи особисті)
-        if message.chat.type in ['group', 'supergroup']:
-            welcome_text = f"👋 **Привіт!**\nЯ знаю твої налаштування: **{user[0]}, Черга {user[1]}**.\nТи можеш налаштувати сповіщення окремо для цієї групи в меню."
-        else:
-            welcome_text = f"👋 **Ласкаво просимо назад!**\n📍 Ваш вибір: **{user[0]}, Черга {user[1]}**"
-
-        # Інлайн-кнопка для додавання бота в групу (тільки в особистих)
-        reply_markup = get_main_keyboard(message.from_user.id)
-        if message.chat.type == 'private':
-            bot_username = await get_bot_username(message.bot)
-            kb_inline = InlineKeyboardBuilder()
-            kb_inline.button(
-                text="➕ Додати бота в групу/канал",
-                url=f"https://t.me/{bot_username}?startgroup=true&admin=post_messages"
-            )
-            await message.answer(
-                welcome_text,
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
-            await message.answer(
-                "💡 Хочете отримувати графік у групі або каналі?",
-                reply_markup=kb_inline.as_markup()
-            )
-        else:
-            await message.answer(
-                welcome_text,
-                reply_markup=reply_markup,
-                parse_mode="Markdown"
-            )
+        welcome_text = f"👋 **Ласкаво просимо назад!**\n📍 Ваш вибір: **{user[0]}, Черга {user[1]}**"
+        
+        # Інлайн-кнопка для додавання бота в групу
+        bot_username = await get_bot_username(message.bot)
+        kb_inline = InlineKeyboardBuilder()
+        kb_inline.button(
+            text="➕ Додати бота в групу/канал",
+            url=f"https://t.me/{bot_username}?startgroup=true&admin=post_messages"
+        )
+        
+        await message.answer(
+            welcome_text,
+            reply_markup=get_main_keyboard(message.from_user.id),
+            parse_mode="Markdown"
+        )
+        await message.answer(
+            "💡 Хочете отримувати графік у групі або каналі?",
+            reply_markup=kb_inline.as_markup()
+        )
         return
     
     # Якщо юзера немає в базі
@@ -270,7 +262,7 @@ async def grp_select_queue(callback: types.CallbackQuery):
         f"✅ **Групу налаштовано!**\n\n"
         f"📍 {region}, Черга {queue}\n\n"
         f"Тепер бот буде надсилати сповіщення в цю групу.\n"
-        f"Налаштувати сповіщення: /group_settings",
+        f"Налаштувати сповіщення: /group\\_settings",
         parse_mode="Markdown"
     )
 
