@@ -60,6 +60,10 @@ async def init_db():
             await db.execute("ALTER TABLE users ADD COLUMN display_mode TEXT DEFAULT 'blackout'")
         except: pass
 
+        try:
+            # Активність (чи не заблокував користувач бота)
+            await db.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
+        except: pass
 
         # Таблиця для статистики
         await db.execute("""
@@ -159,7 +163,7 @@ async def save_user(user_id, region, queue):
         await db.execute("""
             INSERT INTO users (user_id, region, queue) 
             VALUES (?, ?, ?) 
-            ON CONFLICT(user_id) DO UPDATE SET region=excluded.region, queue=excluded.queue
+            ON CONFLICT(user_id) DO UPDATE SET region=excluded.region, queue=excluded.queue, is_active=1
         """, (user_id, region, queue))
         await db.commit()
 
@@ -285,6 +289,26 @@ async def get_users_count():
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+async def get_active_users_count():
+    """Отримує кількість активних користувачів."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Враховуємо і 1, і NULL (на випадок якщо ALTER TABLE не застосував дефолт)
+        async with db.execute("SELECT COUNT(*) FROM users WHERE is_active = 1 OR is_active IS NULL") as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+async def mark_user_active(user_id):
+    """Позначає користувача активним."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+async def mark_user_inactive(user_id):
+    """Позначає користувача неактивним (заблокував бота)."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
+        await db.commit()
 
 async def get_all_users_for_broadcast():
     """Отримує всіх користувачів для розсилки."""

@@ -5,6 +5,7 @@ from aiogram import Router, types, F
 from aiogram.filters import Command, CommandObject, ChatMemberUpdatedFilter, IS_MEMBER, IS_NOT_MEMBER
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.types import KeyboardButton, InlineKeyboardButton, ChatMemberUpdated
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 import database as db
 import api_utils as api
@@ -76,6 +77,7 @@ async def start_command(message: types.Message, command: CommandObject):
     user = await db.get_user(message.from_user.id)
     
     if user:
+        await db.mark_user_active(message.from_user.id)
         welcome_text = f"👋 **Ласкаво просимо назад!**\n📍 Ваш вибір: **{user[0]}, Черга {user[1]}**"
         
         # Інлайн-кнопка для додавання бота в групу
@@ -1400,9 +1402,11 @@ async def users_count(message: types.Message):
     if message.from_user.id != ADMIN_ID: 
         return
     count = await db.get_users_count()
+    active_count = await db.get_active_users_count()
     groups_count = await db.get_groups_count()
     
     text = f"👥 **Всього користувачів:** {count}\n"
+    text += f"🟢 **Активні користувачі:** {active_count}\n"
     text += f"💬 **Підключених груп/каналів:** {groups_count}"
     
     if groups_count > 0:
@@ -1446,6 +1450,9 @@ async def handle_text_messages(message: types.Message):
                     await message.bot.send_message(uid, f"📢 **Сповіщення:**\n\n{message.text}", parse_mode="Markdown")
                     sent += 1
                     await asyncio.sleep(0.05)
+                except (TelegramForbiddenError, TelegramBadRequest):
+                    failed += 1
+                    await db.mark_user_inactive(uid)
                 except Exception:
                     failed += 1
             

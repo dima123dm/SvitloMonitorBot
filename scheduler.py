@@ -3,6 +3,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 from aiogram.types import FSInputFile
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 import api_utils as api
 import database as db
 from config import UPDATE_INTERVAL, ADMIN_IDS, DB_NAME
@@ -37,6 +38,8 @@ async def smart_broadcast(bot, region, queue, text_blackout, text_light, filter_
             text_to_send = text_light if mode == 'light' else text_blackout
             
             await bot.send_message(uid, text_to_send, parse_mode="Markdown")
+        except (TelegramForbiddenError, TelegramBadRequest):
+            await db.mark_user_inactive(uid)
         except Exception:
             pass
         

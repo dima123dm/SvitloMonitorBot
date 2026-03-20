@@ -76,7 +76,7 @@
 
 ### Крок 1. Клонування репозиторію
 ```bash
-git clone [https://github.com/dima123dm/SvitloMonitorBot.git](https://github.com/dima123dm/SvitloMonitorBot.git)
+git clone [https://github.com/mriamys/SvitloMonitorBot.git](https://github.com/mriamys/SvitloMonitorBot.git)
 cd SvitloMonitorBot
 ```
 ### Крок 2. Налаштування оточення
