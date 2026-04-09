@@ -277,6 +277,12 @@ async def fetch_api_data():
 
     api_cache["data"] = data
     api_cache["timestamp"] = now
+    if data:
+        try:
+            with open("api_cache.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ Помилка запису api_cache.json: {e}")
     return data
 
 
