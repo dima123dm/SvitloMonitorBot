@@ -5,11 +5,8 @@ import re
 import json
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
-from config import API_URL
+from config import API_URL, PRIMARY_API_URL, BACKUP_API_URL, FAILOVER_TIMEOUT, RECOVERY_CHECK_INTERVAL, HOE_SITE_URL
 import database as db
-
-# URL офіційного сайту
-HOE_SITE_URL = "https://hoe.com.ua/page/pogodinni-vidkljuchennja"
 
 # Словник для конвертації місяців
 UA_MONTHS = {
@@ -18,40 +15,266 @@ UA_MONTHS = {
     'вересня': '09', 'жовтня': '10', 'листопада': '11', 'грудня': '12'
 }
 
+# === МАППІНГ НАЗВ РЕГІОНІВ ДЛЯ СУМІСНОСТІ ===
+# Нове API використовує "Хмельницька область", старе — "Хмельницька"
+# Нормалізуємо до формату, який вже є в базі юзерів
+REGION_NAME_NORMALIZE = {
+    "Хмельницька область": "Хмельницька",
+    # Додати інші якщо знайдуться
+}
+
+# === СТАН FAILOVER СИСТЕМИ ===
+api_state = {
+    "active_source": "primary",      # "primary" або "backup"
+    "primary_down_since": None,       # datetime коли впало основне
+    "backup_down_since": None,        # datetime коли впало резервне
+    "last_primary_check": None,       # коли останній раз перевіряли основне (з резерву)
+    "last_switch": None,              # коли останній раз перемикались
+    "consecutive_primary_fails": 0,   # підряд невдачі основного
+    "consecutive_backup_fails": 0,    # підряд невдачі резервного
+    "total_switches": 0,              # загальна кількість перемикань
+    "last_emergency_regions": set(),  # регіони з екстреним режимом
+}
+
+# === КЕШ ДАНИХ (Захист від Thundering Herd) ===
+api_cache = {
+    "data": None,
+    "timestamp": None
+}
+CACHE_TTL = 60  # Секунд (1 хвилина)
+
+def normalize_region_names(data):
+    """Приводить назви регіонів до стандарту бота (для сумісності з базою)."""
+    if not data or 'regions' not in data:
+        return data
+    for region in data['regions']:
+        original = region.get('name_ua', '')
+        if original in REGION_NAME_NORMALIZE:
+            region['name_ua'] = REGION_NAME_NORMALIZE[original]
+    return data
+
+
+async def fetch_primary_api():
+    """Запит до основного DTEK Proxy API (нове)."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(PRIMARY_API_URL, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status == 200:
+                    raw = await response.json()
+                    # Подвійний парсинг: body — це JSON-рядок
+                    body_str = raw.get('body', '{}')
+                    if isinstance(body_str, str):
+                        data = json.loads(body_str)
+                    else:
+                        data = body_str
+                    # Нормалізація назв для сумісності
+                    data = normalize_region_names(data)
+                    return data
+                else:
+                    print(f"⚠️ Primary API HTTP {response.status}")
+    except asyncio.TimeoutError:
+        print("⚠️ Primary API: Timeout")
+    except json.JSONDecodeError as e:
+        print(f"⚠️ Primary API JSON Error: {e}")
+    except Exception as e:
+        print(f"❌ Primary API Error: {e}")
+    return None
+
+
+async def fetch_backup_api():
+    """Запит до резервного API (попереднє джерело)."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(BACKUP_API_URL, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    print(f"⚠️ Backup API HTTP {response.status}")
+    except asyncio.TimeoutError:
+        print("⚠️ Backup API: Timeout")
+    except Exception as e:
+        print(f"❌ Backup API Error: {e}")
+    return None
+
+
 async def fetch_api_data():
-    """ГОЛОВНА ФУНКЦІЯ ОТРИМАННЯ ДАНИХ."""
-    api_data = await fetch_original_api_source()
+    """ГОЛОВНА ФУНКЦІЯ ОТРИМАННЯ ДАНИХ з Failover логікою і кешуванням."""
+    global api_state, api_cache
+    now = datetime.now()
+    
+    # 1. Перевіряємо кеш (Захист від Thundering Herd)
+    if api_cache["timestamp"] is not None:
+        elapsed_cache = (now - api_cache["timestamp"]).total_seconds()
+        if elapsed_cache < CACHE_TTL:
+            return api_cache["data"]
+
+    data = None
+
+    if api_state["active_source"] == "primary":
+        # === Активне джерело: ОСНОВНЕ (DTEK Proxy) ===
+        data = await fetch_primary_api()
+
+        if data:
+            # Основне працює — скидаємо лічильники
+            api_state["consecutive_primary_fails"] = 0
+            api_state["primary_down_since"] = None
+        else:
+            # Основне НЕ працює
+            api_state["consecutive_primary_fails"] += 1
+
+            if api_state["primary_down_since"] is None:
+                api_state["primary_down_since"] = now
+                print(f"⚠️ Основне API не відповідає. Початок відліку failover...")
+
+            elapsed = (now - api_state["primary_down_since"]).total_seconds()
+
+            if elapsed >= FAILOVER_TIMEOUT:
+                # 2+ години без відповіді — ПЕРЕМИКАННЯ на резерв
+                print(f"🔄 FAILOVER: Перемикання на РЕЗЕРВНЕ API! (Основне не працює {elapsed/3600:.1f} год)")
+                api_state["active_source"] = "backup"
+                api_state["last_primary_check"] = now
+                api_state["last_switch"] = now
+                api_state["total_switches"] += 1
+                data = await fetch_backup_api()
+            else:
+                # Ще чекаємо, але пробуємо резерв як тимчасовий fallback
+                mins_left = (FAILOVER_TIMEOUT - elapsed) / 60
+                print(f"⏳ Основне API не працює {elapsed/60:.0f} хв. Перемикання через {mins_left:.0f} хв. Пробуємо резерв...")
+                data = await fetch_backup_api()
+
+    else:
+        # === Активне джерело: РЕЗЕРВНЕ ===
+        # Перевіряємо, чи час спробувати повернутись на основне
+        should_check_primary = False
+
+        if api_state["last_primary_check"]:
+            elapsed_since_check = (now - api_state["last_primary_check"]).total_seconds()
+            if elapsed_since_check >= RECOVERY_CHECK_INTERVAL:
+                should_check_primary = True
+        else:
+            should_check_primary = True  # Ніколи не перевіряли — пробуємо
+
+        if should_check_primary:
+            print("🔍 Перевірка основного API (recovery check)...")
+            primary_data = await fetch_primary_api()
+            api_state["last_primary_check"] = now
+
+            if primary_data:
+                # Основне відновилось!
+                print("✅ Основне API відновлено! Повертаємось на PRIMARY.")
+                api_state["active_source"] = "primary"
+                api_state["primary_down_since"] = None
+                api_state["consecutive_primary_fails"] = 0
+                api_state["last_switch"] = now
+                api_state["total_switches"] += 1
+                data = primary_data
+            else:
+                print(f"❌ Основне API все ще не працює. Залишаємось на резерві. Наступна перевірка через {RECOVERY_CHECK_INTERVAL/3600:.0f} год.")
+                data = await fetch_backup_api()
+        else:
+            # Ще не час перевіряти — просто юзаємо резерв
+            data = await fetch_backup_api()
+
+        # Лічильник помилок резервного
+        if data:
+            api_state["consecutive_backup_fails"] = 0
+            api_state["backup_down_since"] = None
+        else:
+            api_state["consecutive_backup_fails"] += 1
+            if api_state["backup_down_since"] is None:
+                api_state["backup_down_since"] = now
+
+            # Якщо резерв теж лежить 2+ години — пробуємо основне примусово
+            if api_state["backup_down_since"]:
+                elapsed_backup = (now - api_state["backup_down_since"]).total_seconds()
+                if elapsed_backup >= FAILOVER_TIMEOUT:
+                    print("🔄 FAILOVER: Резервне API теж не працює 2+ год! Пробуємо повернутись на основне...")
+                    primary_data = await fetch_primary_api()
+                    if primary_data:
+                        api_state["active_source"] = "primary"
+                        api_state["primary_down_since"] = None
+                        api_state["backup_down_since"] = None
+                        api_state["last_switch"] = now
+                        api_state["total_switches"] += 1
+                        data = primary_data
+                        print("✅ Основне API працює! Повернулись.")
+
+    # === ОБРОБКА ЕКСТРЕНИХ ВІДКЛЮЧЕНЬ (emergency) ===
+    if data and 'regions' in data:
+        current_emergency = set()
+        for region in data['regions']:
+            if region.get('emergency', False):
+                current_emergency.add(region['name_ua'])
+        
+        # Зберігаємо для використання в scheduler/handlers
+        api_state["last_emergency_regions"] = current_emergency
+
+    # === ІНТЕГРАЦІЯ САЙТУ HOE (як раніше) ===
     is_site_enabled = await db.get_system_config('hoe_site_enabled', '1')
 
     if is_site_enabled == '1':
         try:
             site_data = await fetch_hoe_site()
-            if site_data and api_data:
+            if site_data and data:
                 found = False
-                for region in api_data.get('regions', []):
+                for region in data.get('regions', []):
                     if region['name_ua'] == 'Хмельницька':
                         region['schedule'] = site_data['regions'][0]['schedule']
                         found = True
                         break
                 if not found:
-                    api_data.setdefault('regions', []).append(site_data['regions'][0])
-            elif site_data and not api_data:
+                    data.setdefault('regions', []).append(site_data['regions'][0])
+            elif site_data and not data:
+                api_cache["data"] = site_data
+                api_cache["timestamp"] = now
                 return site_data
         except Exception as e:
             print(f"⚠️ Помилка інтеграції сайту HOE: {e}")
 
-    return api_data
+    api_cache["data"] = data
+    api_cache["timestamp"] = now
+    return data
+
+
+def get_api_status():
+    """Повертає поточний стан API для адмін-панелі."""
+    state = api_state.copy()
+    now = datetime.now()
+
+    result = {
+        "active_source": state["active_source"],
+        "active_source_name": "🟢 DTEK Proxy (Основне)" if state["active_source"] == "primary" else "🟡 Резервне API",
+        "total_switches": state["total_switches"],
+        "last_switch": state["last_switch"].strftime("%d.%m %H:%M") if state["last_switch"] else "—",
+        "primary_fails": state["consecutive_primary_fails"],
+        "backup_fails": state["consecutive_backup_fails"],
+        "emergency_regions": list(state.get("last_emergency_regions", [])),
+    }
+
+    # Час downtime основного
+    if state["primary_down_since"]:
+        elapsed = (now - state["primary_down_since"]).total_seconds()
+        result["primary_downtime"] = f"{elapsed/60:.0f} хв"
+    else:
+        result["primary_downtime"] = "—"
+
+    # Час до наступної перевірки recovery
+    if state["active_source"] == "backup" and state["last_primary_check"]:
+        elapsed = (now - state["last_primary_check"]).total_seconds()
+        remaining = max(0, RECOVERY_CHECK_INTERVAL - elapsed)
+        result["next_recovery_check"] = f"{remaining/3600:.1f} год"
+    else:
+        result["next_recovery_check"] = "—"
+
+    return result
+
+
+# === ОРИГІНАЛЬНА ЛОГІКА (парсинг/форматування — БЕЗ ЗМІН) ===
 
 async def fetch_original_api_source():
-    """Робить запит до резервного API."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(API_URL, timeout=15) as response:
-                if response.status == 200:
-                    return await response.json()
-    except Exception as e:
-        print(f"Помилка API (Backup): {e}")
-    return None
+    """Робить запит до резервного API. (Legacy alias)"""
+    return await fetch_backup_api()
+
 
 async def fetch_hoe_site():
     """Завантажує HTML сайту і парсить черги."""
@@ -329,6 +552,9 @@ def format_message(schedule_json, queue_name, date_str, is_tomorrow=False, displ
 
     if total_possible > 0:
         stats_text += f"\n⚠️ Можливо без світла: **{total_possible:g} год.**"
+
+    # === НОВЕ: Мітка джерела даних ===
+    source_label = "🌐" if api_state["active_source"] == "primary" else "🔄"
 
     text = (
         f"{header}\n"

@@ -1220,8 +1220,8 @@ async def admin_menu(message: types.Message):
     
     kb.row(KeyboardButton(text=support_text), KeyboardButton(text="👥 Користувачів"))
     
-    # === НОВА КНОПКА ДЛЯ КЕРУВАННЯ САЙТОМ ===
-    kb.row(KeyboardButton(text="⚙️ Керування джерелами"))
+    # === КНОПКИ КЕРУВАННЯ ===
+    kb.row(KeyboardButton(text="⚙️ Керування джерелами"), KeyboardButton(text="🛰 API Статус"))
     kb.row(KeyboardButton(text="🏠 Меню"))
     
     await message.answer(
@@ -1236,15 +1236,112 @@ async def admin_sources_control(message: types.Message):
     if message.from_user.id != ADMIN_ID: 
         return
 
-    # Отримуємо поточний стан
+    # Отримуємо поточний стан HOE сайту
     site_enabled = await db.get_system_config('hoe_site_enabled', '1')
     status_icon = "✅" if site_enabled == '1' else "❌"
     
+    # Отримуємо стан API failover
+    api_status = api.get_api_status()
+    
+    text = (
+        "🛠 **Керування джерелами даних**\n\n"
+        f"🛰 Активне API: {api_status['active_source_name']}\n"
+        f"🔄 Перемикань: **{api_status['total_switches']}**\n"
+        f"⏰ Останнє перемикання: **{api_status['last_switch']}**\n"
+    )
+    
+    if api_status['emergency_regions']:
+        text += f"⚠️ Екстрені регіони: **{', '.join(api_status['emergency_regions'])}**\n"
+    
+    text += "\nНатисніть, щоб увімкнути/вимкнути:"
+    
     kb = InlineKeyboardBuilder()
-    # === ВИПРАВЛЕННЯ: Додано "text=" ===
     kb.add(InlineKeyboardButton(text=f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
     
-    await message.answer("🛠 **Керування джерелами даних**\nНатисніть, щоб увімкнути/вимкнути:", reply_markup=kb.as_markup())
+    # Кнопка примусового перемикання API
+    current_api = api_status['active_source']
+    switch_text = "➡️ Перемкнути на Резервне" if current_api == "primary" else "➡️ Повернути на Основне"
+    kb.add(InlineKeyboardButton(text=switch_text, callback_data="force_switch_api"))
+    kb.adjust(1)
+    
+    await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+
+# === НОВЕ: КОМАНДА /api_status ===
+@router.message(F.text == "🛰 API Статус")
+@router.message(Command("api_status"))
+async def api_status_command(message: types.Message):
+    """API статус для адміна."""
+    if message.from_user.id != ADMIN_ID: 
+        return
+    
+    status = api.get_api_status()
+    
+    text = (
+        "🛰 **Статус API Failover**\n"
+        "══════════════════\n"
+        f"🎯 Активне: {status['active_source_name']}\n"
+        f"🔄 Перемикань: **{status['total_switches']}**\n"
+        f"⏰ Останнє перемикання: {status['last_switch']}\n"
+        "\n**Основне API (DTEK Proxy):**\n"
+        f"  • Невдач підряд: {status['primary_fails']}\n"
+        f"  • Downtime: {status['primary_downtime']}\n"
+        "\n**Резервне API:**\n"
+        f"  • Невдач підряд: {status['backup_fails']}\n"
+        f"⏳ Наступна перевірка recovery: {status['next_recovery_check']}\n"
+    )
+    
+    if status['emergency_regions']:
+        text += f"\n🚨 **Екстренні регіони:** {', '.join(status['emergency_regions'])}"
+    
+    await message.answer(text, parse_mode="Markdown")
+
+
+# === НОВЕ: ПРИМУСОВЕ ПЕРЕМИКАННЯ API ===
+@router.callback_query(F.data == "force_switch_api")
+async def force_switch_api_callback(call: types.CallbackQuery):
+    if call.from_user.id != ADMIN_ID: 
+        return
+    
+    current = api.api_state["active_source"]
+    if current == "primary":
+        api.api_state["active_source"] = "backup"
+        api.api_state["last_primary_check"] = datetime.now()
+        api.api_state["last_switch"] = datetime.now()
+        api.api_state["total_switches"] += 1
+        new_name = "🟡 Резервне API"
+    else:
+        api.api_state["active_source"] = "primary"
+        api.api_state["primary_down_since"] = None
+        api.api_state["backup_down_since"] = None
+        api.api_state["last_switch"] = datetime.now()
+        api.api_state["total_switches"] += 1
+        new_name = "🟢 DTEK Proxy (Основне)"
+    
+    await call.answer(f"Активне: {new_name}", show_alert=True)
+    
+    # Оновлюємо повідомлення
+    api_status_new = api.get_api_status()
+    site_enabled = await db.get_system_config('hoe_site_enabled', '1')
+    status_icon = "✅" if site_enabled == '1' else "❌"
+    
+    text = (
+        "🛠 **Керування джерелами даних**\n\n"
+        f"🛰 Активне API: {api_status_new['active_source_name']}\n"
+        f"🔄 Перемикань: **{api_status_new['total_switches']}**\n"
+        f"⏰ Останнє перемикання: **{api_status_new['last_switch']}**\n"
+        "\nНатисніть, щоб увімкнути/вимкнути:"
+    )
+    
+    kb = InlineKeyboardBuilder()
+    kb.add(InlineKeyboardButton(text=f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
+    new_api = api_status_new['active_source']
+    switch_text = "➡️ Перемкнути на Резервне" if new_api == "primary" else "➡️ Повернути на Основне"
+    kb.add(InlineKeyboardButton(text=switch_text, callback_data="force_switch_api"))
+    kb.adjust(1)
+    
+    await call.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
 
 @router.callback_query(F.data == "toggle_hoe_site")
 async def toggle_hoe_site_callback(call: types.CallbackQuery):
@@ -1257,11 +1354,25 @@ async def toggle_hoe_site_callback(call: types.CallbackQuery):
     status_icon = "✅" if new_value == '1' else "❌"
     status_text = "ВІМКНЕНО" if new_value == '1' else "ВИМКНЕНО"
     
-    kb = InlineKeyboardBuilder()
-    # === ВИПРАВЛЕННЯ: Додано "text=" ===
-    kb.add(InlineKeyboardButton(text=f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
+    # Оновлюємо повне повідомлення
+    api_status_new = api.get_api_status()
     
-    await call.message.edit_reply_markup(reply_markup=kb.as_markup())
+    text = (
+        "🛠 **Керування джерелами даних**\n\n"
+        f"🛰 Активне API: {api_status_new['active_source_name']}\n"
+        f"🔄 Перемикань: **{api_status_new['total_switches']}**\n"
+        f"⏰ Останнє перемикання: **{api_status_new['last_switch']}**\n"
+        "\nНатисніть, щоб увімкнути/вимкнути:"
+    )
+    
+    kb = InlineKeyboardBuilder()
+    kb.add(InlineKeyboardButton(text=f"🌐 Сайт HOE: {status_icon}", callback_data="toggle_hoe_site"))
+    current_api = api_status_new['active_source']
+    switch_text = "➡️ Перемкнути на Резервне" if current_api == "primary" else "➡️ Повернути на Основне"
+    kb.add(InlineKeyboardButton(text=switch_text, callback_data="force_switch_api"))
+    kb.adjust(1)
+    
+    await call.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
     await call.answer(f"Парсинг сайту {status_text}")
 
 

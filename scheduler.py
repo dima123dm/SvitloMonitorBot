@@ -13,6 +13,10 @@ schedules_cache = {}
 # Історія сповіщень
 alert_history = set()
 
+# === НОВЕ: Трекінг стану API для сповіщень адміну ===
+_last_known_api_source = None
+_last_known_emergency = set()
+
 # Словник відправок: { (region, queue): "2024-01-26" }
 sent_notifications = {}
 
@@ -94,7 +98,7 @@ def find_next_outage(current_time_str, today_intervals, tomorrow_intervals):
 
 async def check_updates(bot):
     """Перевіряє оновлення графіків на сайті."""
-    # global schedule_sent_today # Більше не потрібно
+    global _last_known_api_source, _last_known_emergency
     first_run = True
 
     while True:
@@ -103,6 +107,46 @@ async def check_updates(bot):
             await db.cleanup_old_stats()
 
             data = await api.fetch_api_data()
+            
+            # === НОВЕ: Трекінг перемикання API та сповіщення адміну ===
+            current_source = api.api_state.get("active_source", "primary")
+            if _last_known_api_source is not None and _last_known_api_source != current_source:
+                admin_id = ADMIN_IDS[0] if isinstance(ADMIN_IDS, list) and ADMIN_IDS else ADMIN_IDS
+                source_name = "🟢 DTEK Proxy (Основне)" if current_source == "primary" else "🟡 Резервне API"
+                old_name = "🟢 DTEK Proxy" if _last_known_api_source == "primary" else "🟡 Резервне"
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"🔄 **API Failover!**\n\n"
+                        f"Було: {old_name}\n"
+                        f"Стало: {source_name}\n"
+                        f"⏰ {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+                        parse_mode="Markdown"
+                    )
+                except Exception:
+                    pass
+            _last_known_api_source = current_source
+
+            # === НОВЕ: Сповіщення про екстрені відключення ===
+            current_emergency = api.api_state.get("last_emergency_regions", set())
+            new_emergency = current_emergency - _last_known_emergency
+            if new_emergency and not first_run:
+                for region_name in new_emergency:
+                    emergency_msg = f"🚨 **ЕКСТРЕНІ ВІДКЛЮЧЕННЯ!**\n📍 {region_name}\n\nВ регіоні діють позапланові відключення."
+                    # Розсилка всім юзерам цього регіону
+                    subs = await db.get_all_subs()
+                    for reg, queue in subs:
+                        if reg == region_name:
+                            await smart_broadcast(
+                                bot, reg, queue, emergency_msg, emergency_msg,
+                                lambda s: s['notify_changes'] == 1
+                            )
+                            await group_broadcast(
+                                bot, reg, queue, emergency_msg, emergency_msg,
+                                lambda s: s['notify_changes'] == 1
+                            )
+            _last_known_emergency = current_emergency.copy() if current_emergency else set()
+
             if data:
                 today = datetime.now().strftime('%Y-%m-%d')
                 tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
