@@ -283,16 +283,63 @@ async def grp_select_region(callback: types.CallbackQuery):
     region_data = data['regions'][region_idx]
     region_name = region_data['name_ua']
     
+    # Показуємо першу сторінку черг
+    await show_grp_queue_page(callback, target_chat_id, region_idx, region_name, region_data, page=0)
+
+
+async def show_grp_queue_page(callback, target_chat_id, region_idx, region_name, region_data, page=0):
+    """Показує сторінку черг для групи (пагінація по 12)."""
+    QUEUES_PER_PAGE = 12
+    
+    sch = region_data.get('schedule')
+    if not sch:
+        await callback.answer("Черги не знайдено", show_alert=True)
+        return
+    
+    queues = sorted(sch.keys(), key=lambda x: [int(p) for p in x.split('.')] if '.' in x else [int(x), 0])
+    total_pages = (len(queues) + QUEUES_PER_PAGE - 1) // QUEUES_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start = page * QUEUES_PER_PAGE
+    page_queues = queues[start:start + QUEUES_PER_PAGE]
+    
     kb = InlineKeyboardBuilder()
-    for q in sorted(region_data['schedule'].keys()):
+    for q in page_queues:
         kb.button(text=f"Черга {q}", callback_data=f"grp_q|{target_chat_id}|{region_idx}|{q}")
     kb.adjust(3)
     
-    await callback.message.edit_text(
-        f"📍 **{region_name}**. Оберіть чергу для групи/каналу:",
-        reply_markup=kb.as_markup(),
-        parse_mode="Markdown"
-    )
+    # Навігація по сторінках
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"grp_qpage|{target_chat_id}|{region_idx}|{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(text=f"📄 {page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton(text="Далі ▶️", callback_data=f"grp_qpage|{target_chat_id}|{region_idx}|{page+1}"))
+        kb.row(*nav_buttons)
+    
+    text = f"📍 **{region_name}**. Оберіть чергу для групи/каналу:"
+    if total_pages > 1:
+        text += f"\n📄 Сторінка {page+1} з {total_pages} ({len(queues)} черг)"
+    
+    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("grp_qpage|"))
+async def grp_queue_page_nav(callback: types.CallbackQuery):
+    """Навігація по сторінках черг для групи."""
+    parts = callback.data.split("|")
+    target_chat_id = int(parts[1])
+    region_idx = int(parts[2])
+    page = int(parts[3])
+    
+    data = await api.fetch_api_data()
+    if not data or 'regions' not in data or region_idx >= len(data['regions']):
+        await callback.answer("Помилка API", show_alert=True)
+        return
+    
+    region_data = data['regions'][region_idx]
+    region_name = region_data['name_ua']
+    await show_grp_queue_page(callback, target_chat_id, region_idx, region_name, region_data, page=page)
 
 
 @router.callback_query(F.data.startswith("grp_q|"))
@@ -978,15 +1025,71 @@ async def show_regions_menu(message: types.Message, text):
 @router.callback_query(F.data.startswith("reg|"))
 async def select_region(callback: types.CallbackQuery):
     region_name = callback.data.split("|")[1]
+    # Показуємо першу сторінку (page=0)
+    await show_queue_page(callback, region_name, page=0)
+
+
+async def show_queue_page(callback, region_name, page=0):
+    """Показує сторінку черг для обраного регіону (пагінація по 12)."""
+    QUEUES_PER_PAGE = 12
+    
     data = await api.fetch_api_data()
-    kb = InlineKeyboardBuilder()
+    if not data:
+        await callback.answer("⚠️ Помилка API", show_alert=True)
+        return
+    
+    queues = []
     for r in data['regions']:
         if r['name_ua'] == region_name:
-            for q in sorted(r['schedule'].keys()):
-                kb.button(text=f"Черга {q}", callback_data=f"q|{region_name}|{q}")
+            sch = r.get('schedule')
+            if sch:
+                queues = sorted(sch.keys(), key=lambda x: [int(p) for p in x.split('.')] if '.' in x else [int(x), 0])
             break
+    
+    if not queues:
+        await callback.answer("Черги не знайдено", show_alert=True)
+        return
+    
+    total_pages = (len(queues) + QUEUES_PER_PAGE - 1) // QUEUES_PER_PAGE
+    page = max(0, min(page, total_pages - 1))
+    start = page * QUEUES_PER_PAGE
+    page_queues = queues[start:start + QUEUES_PER_PAGE]
+
+    kb = InlineKeyboardBuilder()
+    for q in page_queues:
+        kb.button(text=f"Черга {q}", callback_data=f"q|{region_name}|{q}")
     kb.adjust(3)
-    await callback.message.edit_text(f"📍 **{region_name}**. Оберіть чергу:", reply_markup=kb.as_markup(), parse_mode="Markdown")
+    
+    # Навігація по сторінках (якщо більше 1 сторінки)
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"qpage|{region_name}|{page-1}"))
+        nav_buttons.append(InlineKeyboardButton(text=f"📄 {page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton(text="Далі ▶️", callback_data=f"qpage|{region_name}|{page+1}"))
+        kb.row(*nav_buttons)
+    
+    # Кнопка повернення до списку областей
+    kb.row(InlineKeyboardButton(text="🔙 До областей", callback_data="open_regions"))
+    
+    text = f"📍 **{region_name}**. Оберіть чергу:"
+    if total_pages > 1:
+        text += f"\n📄 Сторінка {page+1} з {total_pages} ({len(queues)} черг)"
+    
+    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("qpage|"))
+async def queue_page_nav(callback: types.CallbackQuery):
+    """Навігація по сторінках черг."""
+    _, region_name, page_str = callback.data.split("|")
+    await show_queue_page(callback, region_name, page=int(page_str))
+
+
+@router.callback_query(F.data == "noop")
+async def noop_handler(callback: types.CallbackQuery):
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("q|"))

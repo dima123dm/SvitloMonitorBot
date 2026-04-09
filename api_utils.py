@@ -48,9 +48,18 @@ def normalize_region_names(data):
     if not data or 'regions' not in data:
         return data
     for region in data['regions']:
-        original = region.get('name_ua', '')
-        if original in REGION_NAME_NORMALIZE:
-            region['name_ua'] = REGION_NAME_NORMALIZE[original]
+        orig = region.get('name_ua', '')
+        
+        # 1. Прибираємо слово " область" з кінця
+        if orig.endswith(" область"):
+            orig = orig.replace(" область", "").strip()
+            
+        # 2. Ручна заміна специфічних назв
+        if orig in REGION_NAME_NORMALIZE:
+            orig = REGION_NAME_NORMALIZE[orig]
+            
+        region['name_ua'] = orig
+        
     return data
 
 
@@ -96,9 +105,39 @@ async def fetch_backup_api():
         print(f"❌ Backup API Error: {e}")
     return None
 
+def merge_api_data(primary, backup):
+    """Гібридне злиття: Primary (детальніші черги) + Backup (більше областей).
+    
+    Логіка:
+    - Регіони з Primary мають пріоритет (бо там більше черг, наприклад Київ — 60)
+    - Регіони, яких немає в Primary, добираються з Backup
+    - Emergency прапорець з Primary зберігається
+    """
+    if not primary or 'regions' not in primary:
+        return backup
+    if not backup or 'regions' not in backup:
+        return primary
+    
+    # Індексуємо primary регіони по назві
+    primary_names = {r['name_ua'] for r in primary['regions']}
+    
+    # Додаємо з backup ті регіони, яких немає в primary
+    for backup_region in backup['regions']:
+        name = backup_region.get('name_ua', '')
+        if name not in primary_names and backup_region.get('schedule') is not None:
+            primary['regions'].append(backup_region)
+    
+    # Зберігаємо дати з обох (Primary має пріоритет)
+    if 'date_today' not in primary and 'date_today' in backup:
+        primary['date_today'] = backup['date_today']
+    if 'date_tomorrow' not in primary and 'date_tomorrow' in backup:
+        primary['date_tomorrow'] = backup['date_tomorrow']
+    
+    return primary
+
 
 async def fetch_api_data():
-    """ГОЛОВНА ФУНКЦІЯ ОТРИМАННЯ ДАНИХ з Failover логікою і кешуванням."""
+    """ГОЛОВНА ФУНКЦІЯ ОТРИМАННЯ ДАНИХ — Гібридний режим з Failover."""
     global api_state, api_cache
     now = datetime.now()
     
@@ -108,16 +147,24 @@ async def fetch_api_data():
         if elapsed_cache < CACHE_TTL:
             return api_cache["data"]
 
-    data = None
+    primary_data = None
+    backup_data = None
 
     if api_state["active_source"] == "primary":
         # === Активне джерело: ОСНОВНЕ (DTEK Proxy) ===
-        data = await fetch_primary_api()
+        primary_data = await fetch_primary_api()
 
-        if data:
+        if primary_data:
             # Основне працює — скидаємо лічильники
             api_state["consecutive_primary_fails"] = 0
             api_state["primary_down_since"] = None
+            
+            # === ГІБРИД: Добираємо відсутні регіони з Backup ===
+            backup_data = await fetch_backup_api()
+            if backup_data:
+                primary_data = merge_api_data(primary_data, backup_data)
+                api_state["consecutive_backup_fails"] = 0
+                api_state["backup_down_since"] = None
         else:
             # Основне НЕ працює
             api_state["consecutive_primary_fails"] += 1
@@ -135,16 +182,12 @@ async def fetch_api_data():
                 api_state["last_primary_check"] = now
                 api_state["last_switch"] = now
                 api_state["total_switches"] += 1
-                data = await fetch_backup_api()
-            else:
-                # Ще чекаємо, але пробуємо резерв як тимчасовий fallback
-                mins_left = (FAILOVER_TIMEOUT - elapsed) / 60
-                print(f"⏳ Основне API не працює {elapsed/60:.0f} хв. Перемикання через {mins_left:.0f} хв. Пробуємо резерв...")
-                data = await fetch_backup_api()
+            
+            # Так чи інакше — беремо з резерву
+            backup_data = await fetch_backup_api()
 
     else:
         # === Активне джерело: РЕЗЕРВНЕ ===
-        # Перевіряємо, чи час спробувати повернутись на основне
         should_check_primary = False
 
         if api_state["last_primary_check"]:
@@ -152,7 +195,7 @@ async def fetch_api_data():
             if elapsed_since_check >= RECOVERY_CHECK_INTERVAL:
                 should_check_primary = True
         else:
-            should_check_primary = True  # Ніколи не перевіряли — пробуємо
+            should_check_primary = True
 
         if should_check_primary:
             print("🔍 Перевірка основного API (recovery check)...")
@@ -160,23 +203,18 @@ async def fetch_api_data():
             api_state["last_primary_check"] = now
 
             if primary_data:
-                # Основне відновилось!
                 print("✅ Основне API відновлено! Повертаємось на PRIMARY.")
                 api_state["active_source"] = "primary"
                 api_state["primary_down_since"] = None
                 api_state["consecutive_primary_fails"] = 0
                 api_state["last_switch"] = now
                 api_state["total_switches"] += 1
-                data = primary_data
-            else:
-                print(f"❌ Основне API все ще не працює. Залишаємось на резерві. Наступна перевірка через {RECOVERY_CHECK_INTERVAL/3600:.0f} год.")
-                data = await fetch_backup_api()
-        else:
-            # Ще не час перевіряти — просто юзаємо резерв
-            data = await fetch_backup_api()
+
+        # Завжди беремо backup коли в резервному режимі
+        backup_data = await fetch_backup_api()
 
         # Лічильник помилок резервного
-        if data:
+        if backup_data:
             api_state["consecutive_backup_fails"] = 0
             api_state["backup_down_since"] = None
         else:
@@ -188,16 +226,24 @@ async def fetch_api_data():
             if api_state["backup_down_since"]:
                 elapsed_backup = (now - api_state["backup_down_since"]).total_seconds()
                 if elapsed_backup >= FAILOVER_TIMEOUT:
-                    print("🔄 FAILOVER: Резервне API теж не працює 2+ год! Пробуємо повернутись на основне...")
-                    primary_data = await fetch_primary_api()
+                    # Використовуємо результат recovery check якщо він вже був
+                    if primary_data is None:
+                        print("🔄 FAILOVER: Резервне теж не працює 2+ год! Пробуємо основне...")
+                        primary_data = await fetch_primary_api()
                     if primary_data:
                         api_state["active_source"] = "primary"
                         api_state["primary_down_since"] = None
                         api_state["backup_down_since"] = None
                         api_state["last_switch"] = now
                         api_state["total_switches"] += 1
-                        data = primary_data
                         print("✅ Основне API працює! Повернулись.")
+
+        # Гібрид в резервному режимі (якщо recovery check дав primary_data)
+        if primary_data and backup_data:
+            backup_data = merge_api_data(primary_data, backup_data)
+    
+    # === ЗБИРАЄМО ФІНАЛЬНІ ДАНІ ===
+    data = primary_data or backup_data
 
     # === ОБРОБКА ЕКСТРЕНИХ ВІДКЛЮЧЕНЬ (emergency) ===
     if data and 'regions' in data:
@@ -205,8 +251,6 @@ async def fetch_api_data():
         for region in data['regions']:
             if region.get('emergency', False):
                 current_emergency.add(region['name_ua'])
-        
-        # Зберігаємо для використання в scheduler/handlers
         api_state["last_emergency_regions"] = current_emergency
 
     # === ІНТЕГРАЦІЯ САЙТУ HOE (як раніше) ===
@@ -270,10 +314,6 @@ def get_api_status():
 
 
 # === ОРИГІНАЛЬНА ЛОГІКА (парсинг/форматування — БЕЗ ЗМІН) ===
-
-async def fetch_original_api_source():
-    """Робить запит до резервного API. (Legacy alias)"""
-    return await fetch_backup_api()
 
 
 async def fetch_hoe_site():
