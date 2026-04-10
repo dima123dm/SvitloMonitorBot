@@ -376,9 +376,9 @@ async def check_alerts(bot):
                                     actual_end = end
                                     if end == "24:00" and tom_intervals and tom_intervals[0][0] == "00:00":
                                         actual_end = tom_intervals[0][1]
-                                        actual_end = "завтра до кінця дня" if actual_end == "24:00" else f"завтра до {actual_end}"
+                                        actual_end = "кінця завтрашньої доби (24:00)" if actual_end == "24:00" else f"завтра до {actual_end}"
                                     elif end == "24:00":
-                                        actual_end = "кінця дня"
+                                        actual_end = "24:00"
                                     
                                     msg = f"⏳ **Скоро відключення (через {mins} хв).**\nСвітла не буде до **{actual_end}**."
                                     
@@ -443,7 +443,7 @@ async def check_alerts(bot):
                         if check_time == "00:00":
                              alert_id = f"{key}_00:00_tom_pre_{mins}"
                              if alert_id not in alert_history:
-                                 end_display = "кінця дня" if end_tom == "24:00" else end_tom
+                                 end_display = "24:00" if end_tom == "24:00" else end_tom
                                  msg = f"⏳ **Скоро відключення (через {mins} хв, о 00:00).**\nСвітла не буде до **{end_display}**."
                                  
                                  await smart_broadcast(
