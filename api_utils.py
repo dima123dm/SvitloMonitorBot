@@ -43,6 +43,16 @@ api_cache = {
 }
 CACHE_TTL = 60  # Секунд (1 хвилина)
 
+import os
+if os.path.exists("api_cache.json"):
+    try:
+        with open("api_cache.json", "r", encoding="utf-8") as f:
+            api_cache["data"] = json.load(f)
+            print("💾 Локальний кеш api_cache.json успішно завантажено при запуску!")
+    except Exception as e:
+        print(f"⚠️ Помилка завантаження кешу з файлу: {e}")
+
+
 def normalize_region_names(data):
     """Приводить назви регіонів до стандарту бота (для сумісності з базою)."""
     if not data or 'regions' not in data:
@@ -275,15 +285,21 @@ async def fetch_api_data():
         except Exception as e:
             print(f"⚠️ Помилка інтеграції сайту HOE: {e}")
 
-    api_cache["data"] = data
-    api_cache["timestamp"] = now
+    # Оновлюємо кеш ТІЛЬКИ якщо ми отримали нові дані
     if data:
+        api_cache["data"] = data
+        api_cache["timestamp"] = now
         try:
             with open("api_cache.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"⚠️ Помилка запису api_cache.json: {e}")
-    return data
+    else:
+        # Якщо API впало, ми повертаємо старий кеш (якщо він є), щоб бот не видавав "Дані оновлюються..."
+        # Змінюємо timestamp, щоб наступний запит не пішов одразу ж (throttle)
+        api_cache["timestamp"] = now
+
+    return api_cache["data"]
 
 
 def get_api_status():
