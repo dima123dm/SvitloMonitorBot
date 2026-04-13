@@ -116,33 +116,68 @@ async def fetch_backup_api():
     return None
 
 def merge_api_data(primary, backup):
-    """Гібридне злиття: Primary (детальніші черги) + Backup (більше областей).
+    """Гібридне злиття: Primary (детальніші черги) + Backup (більше областей і дат).
     
     Логіка:
     - Регіони з Primary мають пріоритет (бо там більше черг, наприклад Київ — 60)
     - Регіони, яких немає в Primary, добираються з Backup
     - Emergency прапорець з Primary зберігається
+    - Якщо в Primary немає даних на певну дату для черги — беремо з Backup
+      (наприклад: Primary має тільки 2026-04-11, а Backup має 2026-04-13)
+    ВАЖЛИВО: Жодних додаткових HTTP-запитів — backup вже завжди запитується
+    в гібридному режимі всередині fetch_api_data().
     """
     if not primary or 'regions' not in primary:
         return backup
     if not backup or 'regions' not in backup:
         return primary
-    
+
+    # Індексуємо backup регіони по назві для швидкого пошуку
+    backup_by_name = {r['name_ua']: r for r in backup['regions']}
+
     # Індексуємо primary регіони по назві
     primary_names = {r['name_ua'] for r in primary['regions']}
-    
-    # Додаємо з backup ті регіони, яких немає в primary
+
+    for primary_region in primary['regions']:
+        p_name = primary_region.get('name_ua', '')
+        p_schedule = primary_region.get('schedule')
+        if not p_schedule or not isinstance(p_schedule, dict):
+            continue
+
+        # Шукаємо відповідний регіон в backup
+        b_region = backup_by_name.get(p_name)
+        if not b_region:
+            continue
+        b_schedule = b_region.get('schedule')
+        if not b_schedule or not isinstance(b_schedule, dict):
+            continue
+
+        # Для кожної черги в primary — добираємо відсутні дати з backup
+        for queue_id, p_queue_data in p_schedule.items():
+            b_queue_data = b_schedule.get(queue_id)
+            if not b_queue_data or not isinstance(b_queue_data, dict):
+                continue
+            if not isinstance(p_queue_data, dict):
+                continue
+
+            # Додаємо дати з backup, яких немає в primary
+            for date_str, date_data in b_queue_data.items():
+                if date_str not in p_queue_data:
+                    p_queue_data[date_str] = date_data
+                    print(f"[merge] {p_name}/{queue_id}: добавлено дату {date_str} з backup")
+
+    # Додаємо з backup ті регіони, яких зовсім немає в primary
     for backup_region in backup['regions']:
         name = backup_region.get('name_ua', '')
         if name not in primary_names and backup_region.get('schedule') is not None:
             primary['regions'].append(backup_region)
-    
+
     # Зберігаємо дати з обох (Primary має пріоритет)
     if 'date_today' not in primary and 'date_today' in backup:
         primary['date_today'] = backup['date_today']
     if 'date_tomorrow' not in primary and 'date_tomorrow' in backup:
         primary['date_tomorrow'] = backup['date_tomorrow']
-    
+
     return primary
 
 
