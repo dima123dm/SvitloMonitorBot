@@ -1322,6 +1322,7 @@ async def admin_menu(message: types.Message):
         support_text += f" ({unread_count})"
     
     kb.row(KeyboardButton(text=support_text), KeyboardButton(text="👥 Користувачів"))
+    kb.row(KeyboardButton(text="🗑 Керування групами"))
     
     # === КНОПКИ КЕРУВАННЯ ===
     kb.row(KeyboardButton(text="⚙️ Керування джерелами"), KeyboardButton(text="🛰 API Статус"))
@@ -1632,6 +1633,54 @@ async def users_count(message: types.Message):
             text += f"\n{type_icon} {title or 'Без назви'} — {region}, Ч.{queue}"
     
     await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "🗑 Керування групами")
+async def admin_manage_groups(message: types.Message):
+    if message.from_user.id != ADMIN_ID: 
+        return
+        
+    groups = await db.get_all_group_subs()
+    if not groups:
+        await message.answer("💬 Немає підключених груп.")
+        return
+        
+    kb = InlineKeyboardBuilder()
+    for g in groups:
+        chat_id, title, chat_type, region, queue = g
+        type_icon = "📢" if chat_type == "channel" else "💬"
+        display_name = f"{type_icon} {title or 'Без назви'} ({region}, Ч.{queue})"
+        kb.button(text=f"❌ {display_name[:30]}", callback_data=f"adm_delgrp|{chat_id}")
+        
+    kb.adjust(1)
+    await message.answer("🗑 **Оберіть групу для видалення:**", reply_markup=kb.as_markup(), parse_mode="Markdown")
+
+
+@router.callback_query(F.data.startswith("adm_delgrp|"))
+async def admin_delete_group_callback(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: 
+        return
+        
+    chat_id = int(callback.data.split("|")[1])
+    await db.delete_group_sub(chat_id)
+    
+    # Оновлюємо список
+    groups = await db.get_all_group_subs()
+    if not groups:
+        await callback.message.edit_text("💬 Немає підключених груп.")
+        await callback.answer("✅ Групу видалено", show_alert=True)
+        return
+        
+    kb = InlineKeyboardBuilder()
+    for g in groups:
+        c_id, title, chat_type, region, queue = g
+        type_icon = "📢" if chat_type == "channel" else "💬"
+        display_name = f"{type_icon} {title or 'Без назви'} ({region}, Ч.{queue})"
+        kb.button(text=f"❌ {display_name[:30]}", callback_data=f"adm_delgrp|{c_id}")
+        
+    kb.adjust(1)
+    await callback.message.edit_text("🗑 **Оберіть групу для видалення:**", reply_markup=kb.as_markup(), parse_mode="Markdown")
+    await callback.answer("✅ Групу видалено", show_alert=True)
 
 
 @router.message(F.text == "🏠 Меню")
